@@ -1,13 +1,9 @@
 import { initializeApp } from "firebase/app";
-import { getDatabase } from "firebase/database";
+import { getFirestore } from "firebase/firestore"; // เปลี่ยนมาใช้ Firestore
 
 const firebaseConfig = {
   apiKey: "AIzaSyBltJf8g9-YKwG98Yfu1WdoWNuP_AJqd8M",
   authDomain: "dbsensor-eb39d.firebaseapp.com",
-  
-  // 🛠️ แก้ไขตามที่ Firebase แจ้งเตือน: กลับมาใช้ US Server พร้อมปิดท้ายด้วยสแลช (/) เพื่อความชัวร์
-  databaseURL: "https://dbsensor-eb39d-default-rtdb.firebaseio.com/", 
-  
   projectId: "dbsensor-eb39d",
   storageBucket: "dbsensor-eb39d.firebasestorage.app",
   messagingSenderId: "484180057195",
@@ -18,5 +14,5 @@ const firebaseConfig = {
 // เริ่มต้นระบบ Firebase
 const app = initializeApp(firebaseConfig);
 
-// ส่งออกฐานข้อมูลออกไปใช้งาน
-export const db = getDatabase(app);
+// ส่งออก Firestore Database ออกไปใช้งาน
+export const db = getFirestore(app);

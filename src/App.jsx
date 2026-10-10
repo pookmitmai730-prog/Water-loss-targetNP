@@ -1,328 +1,973 @@
 import React, { useState, useEffect } from 'react';
-import { initializeApp } from 'firebase/app';
-import { getDatabase, ref, onValue, set } from 'firebase/database';
-import { 
-  Activity, Power, Sliders, Thermometer, Zap, 
-  Gauge, AlertTriangle, RefreshCw, Lock, Unlock, Clock, WifiOff, X 
-} from 'lucide-react';
+import { db } from './firebaseConfig';
+import { collection, getDocs, addDoc, updateDoc, deleteDoc, doc } from 'firebase/firestore';
 
-// --- ค่ากำหนด Firebase ---
-const firebaseConfig = {
-  apiKey: "AIzaSyBltJf8g9-YKwG98Yfu1WdoWNuP_AJqd8M",
-  authDomain: "dbsensor-eb39d.firebaseapp.com",
-  databaseURL: "https://dbsensor-eb39d-default-rtdb.firebaseio.com/",
-  projectId: "dbsensor-eb39d",
-  storageBucket: "dbsensor-eb39d.firebasestorage.app",
-  messagingSenderId: "484180057195",
-  appId: "1:484180057195:web:19443fcde28e38bba5e52e",
-  measurementId: "G-ST2Y0E4RG0"
-};
-
-const app = initializeApp(firebaseConfig);
-const db = getDatabase(app);
-
-export default function PumpDashboard() {
-  // --- State สำหรับเก็บข้อมูลจาก Firebase ---
-  const [pumpStatus, setPumpStatus] = useState(false); 
-  const [mode, setMode] = useState('AUTO');              
-  const [p3Actual, setP3Actual] = useState(0.0);        
-  const [p3Setpoint, setP3Setpoint] = useState(2.5);    
-  const [current, setCurrent] = useState(0.0);          
-  const [temperature, setTemperature] = useState(0.0);  
-  const [frequency, setFrequency] = useState(0.0);      
-  const [alarm, setAlarm] = useState(null);             
+export default function StaffEvaluationApp() {
+  const [step, setStep] = useState('login'); // 'login' | 'evaluating' | 'success' | 'admin-login' | 'admin-dashboard'
+  const [activeAdminTab, setActiveAdminTab] = useState('reports'); // 'reports' | 'employees' | 'criteria'
   
-  // --- State สำหรับติดตามเวลาล่าสุดที่ข้อมูลส่งมา (เช็คไฟดับ / หลุดการเชื่อมต่อ) ---
-  const [lastUpdated, setLastUpdated] = useState(null);
-  const [isOfflineOrPowerLoss, setIsOfflineOrPowerLoss] = useState(false);
+  // พนักงาน & ล็อกอิน
+  const [inputEmpId, setInputEmpId] = useState('');
+  const [currentStaff, setCurrentStaff] = useState(null);
+  const [staffList, setStaffList] = useState([]);
+  const [criteriaList, setCriteriaList] = useState([]);
+  
+  // ผลประเมิน
+  const [scores, setScores] = useState({});
+  const [comment, setComment] = useState('');
+  const [errorMsg, setErrorMsg] = useState('');
 
-  // --- State สำหรับระบบ Popup รหัสผ่านก่อนกดสั่งงาน ---
-  const [showAuthModal, setShowAuthModal] = useState(false);
-  const [passcode, setPasscode] = useState('');
-  const [loginError, setLoginError] = useState(false);
-  const [pendingAction, setPendingAction] = useState(null); // เก็บ action ที่ต้องการทำหลังใส่รหัสถูก
+  // Admin States
+  const [adminPin, setAdminPin] = useState('');
+  const [evaluationsList, setEvaluationsList] = useState([]);
 
-  // --- ตรวจสอบสถานะข้อมูลขาดหาย (เกิน 300 วินาที ถือว่าไฟดับหรือ ESP32 หลุด) ---
+  // Form States: เพิ่ม/แก้ไขพนักงาน
+  const [editingEmpDocId, setEditingEmpDocId] = useState(null);
+  const [newEmpId, setNewEmpId] = useState('');
+  const [newEmpName, setNewEmpName] = useState('');
+  const [newEmpPosition, setNewEmpPosition] = useState('');
+  const [newEmpPhoto, setNewEmpPhoto] = useState('');
+
+  // Form States: เพิ่ม/แก้ไขหัวข้อการประเมิน
+  const [editingCriteriaId, setEditingCriteriaId] = useState(null);
+  const [newCriteriaTitle, setNewCriteriaTitle] = useState('');
+
+  // Report Filter States
+  const [reportPeriod, setReportPeriod] = useState('daily'); // 'daily' | 'monthly' | 'yearly' | 'all'
+  const [selectedStaffFilter, setSelectedStaffFilter] = useState('all');
+
+  // โหลดข้อมูลเบื้องต้น
   useEffect(() => {
-    const interval = setInterval(() => {
-      if (lastUpdated) {
-        const secondsElapsed = (Date.now() - lastUpdated) / 1000;
-        if (secondsElapsed > 300) {
-          setIsOfflineOrPowerLoss(true);
-        } else {
-          setIsOfflineOrPowerLoss(false);
-        }
-      }
-    }, 3000);
-    return () => clearInterval(interval);
-  }, [lastUpdated]);
-
-  // --- ดึงข้อมูลแบบ Real-time จาก Firebase ---
-  useEffect(() => {
-    const pumpRef = ref(db, 'pumpSystem');
-    const unsubscribe = onValue(pumpRef, (snapshot) => {
-      const data = snapshot.val();
-      if (data) {
-        setPumpStatus(data.status ?? false);
-        setMode(data.mode ?? 'AUTO');
-        setP3Actual(data.p3Actual ?? 0.0);
-        setP3Setpoint(data.p3Setpoint ?? 2.5);
-        setCurrent(data.current ?? 0.0);
-        setTemperature(data.temperature ?? 0.0);
-        setFrequency(data.frequency ?? 0.0);
-        setAlarm(data.alarm ?? null);
-        
-        setLastUpdated(Date.now());
-        setIsOfflineOrPowerLoss(false);
-      }
-    });
-    return () => unsubscribe();
+    fetchStaffs();
+    fetchCriteria();
   }, []);
 
-  // --- ฟังก์ชันเมื่อผู้ใช้กดปุ่มที่ต้องใช้สิทธิ์ (เรียก Modal ขึ้นมา) ---
-  const requestAction = (actionType) => {
-    setPendingAction(actionType);
-    setPasscode('');
-    setLoginError(false);
-    setShowAuthModal(true);
-  };
-
-  // --- ตรวจสอบรหัสผ่านใน Modal (ตั้งรหัสผ่านไว้ที่ 1234) ---
-  const handleVerifyPin = (e) => {
-    e.preventDefault();
-    if (passcode === '1234') {
-      setShowAuthModal(false);
-      // ทำคำสั่งที่ค้างไว้หลังจากยืนยันรหัสผ่านผ่าน
-      executeAction(pendingAction);
-    } else {
-      setLoginError(true);
+  const fetchStaffs = async () => {
+    try {
+      const querySnapshot = await getDocs(collection(db, "employees"));
+      const list = querySnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      setStaffList(list);
+    } catch (err) {
+      console.error("Error fetching employees:", err);
     }
   };
 
-  // --- กระจายคำสั่งไปเขียนลง Firebase หลังจากปลดล็อกสำเร็จ ---
-  const executeAction = (actionType) => {
-    if (actionType === 'toggleMode') {
-      const newMode = mode === 'AUTO' ? 'MANUAL' : 'AUTO';
-      set(ref(db, 'pumpSystem/mode'), newMode);
-    } else if (actionType === 'togglePower') {
-      if (mode === 'MANUAL') {
-        set(ref(db, 'pumpSystem/status'), !pumpStatus);
+  const fetchCriteria = async () => {
+    try {
+      const querySnapshot = await getDocs(collection(db, "criteria"));
+      const list = querySnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      list.sort((a, b) => (a.order || 0) - (b.order || 0));
+      setCriteriaList(list);
+    } catch (err) {
+      console.error("Error fetching criteria:", err);
+    }
+  };
+
+  const fetchEvaluations = async () => {
+    try {
+      const querySnapshot = await getDocs(collection(db, "evaluations"));
+      const list = querySnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      setEvaluationsList(list);
+    } catch (err) {
+      console.error("Error fetching evaluations:", err);
+    }
+  };
+
+  // 1. เข้าสู่ระบบพนักงาน
+  const handleLogin = (e) => {
+    e.preventDefault();
+    setErrorMsg('');
+    const foundStaff = staffList.find(staff => 
+      String(staff.employeeId).trim() === String(inputEmpId).trim()
+    );
+    
+    if (foundStaff) {
+      setCurrentStaff(foundStaff);
+      setStep('evaluating');
+    } else {
+      setErrorMsg('ไม่พบรหัสพนักงานนี้ในระบบ กรุณาตรวจสอบอีกครั้ง');
+    }
+  };
+
+  // 2. ส่งผลการประเมิน
+  const handleSubmitScore = async (e) => {
+    e.preventDefault();
+    try {
+      await addDoc(collection(db, "evaluations"), {
+        employeeId: currentStaff.employeeId,
+        employeeName: currentStaff.name,
+        scores,
+        comment,
+        createdAt: new Date().toISOString()
+      });
+      setStep('success');
+      setTimeout(() => {
+        setStep('evaluating');
+        setScores({});
+        setComment('');
+      }, 2000);
+    } catch (error) {
+      console.error("Error submitting score: ", error);
+    }
+  };
+
+  // 3. เข้าสู่ระบบ Admin (PIN: 1234)
+  const handleAdminLogin = (e) => {
+    e.preventDefault();
+    if (adminPin === '1234') {
+      setStep('admin-dashboard');
+      fetchEvaluations();
+      setAdminPin('');
+      setErrorMsg('');
+    } else {
+      setErrorMsg('รหัส PIN Admin ไม่ถูกต้อง (รหัสเริ่มต้น: 1234)');
+    }
+  };
+
+  const handleImageChange = (e) => {
+    const file = e.target.files[0];
+    if (file) {
+      const reader = new FileReader();
+      reader.onloadend = () => {
+        setNewEmpPhoto(reader.result);
+      };
+      reader.readAsDataURL(file);
+    }
+  };
+
+  const handleSaveEmployee = async (e) => {
+    e.preventDefault();
+    if (!newEmpId || !newEmpName) return;
+
+    const empData = {
+      employeeId: isNaN(Number(newEmpId)) ? newEmpId : Number(newEmpId),
+      name: newEmpName,
+      position: newEmpPosition || "เจ้าหน้าที่บริการ",
+      photoUrl: newEmpPhoto || "https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=500&h=500&fit=crop&crop=faces"
+    };
+
+    try {
+      if (editingEmpDocId) {
+        await updateDoc(doc(db, "employees", editingEmpDocId), empData);
       } else {
-        alert("ระบบอยู่ในโหมด AUTO ควบคุมด้วยแรงดัน P3 ไม่สามารถกดเปิด-ปิดเองได้ กรุณาสลับเป็น MANUAL ก่อน");
+        await addDoc(collection(db, "employees"), empData);
+      }
+      resetEmpForm();
+      fetchStaffs();
+    } catch (err) {
+      console.error("Error saving employee:", err);
+    }
+  };
+
+  const handleStartEditEmployee = (emp) => {
+    setEditingEmpDocId(emp.id);
+    setNewEmpId(emp.employeeId);
+    setNewEmpName(emp.name);
+    setNewEmpPosition(emp.position || '');
+    setNewEmpPhoto(emp.photoUrl || '');
+  };
+
+  const resetEmpForm = () => {
+    setEditingEmpDocId(null);
+    setNewEmpId('');
+    setNewEmpName('');
+    setNewEmpPosition('');
+    setNewEmpPhoto('');
+  };
+
+  const handleDeleteEmployee = async (id) => {
+    if (window.confirm("คุณต้องการลบข้อมูลพนักงานคนนี้ใช่หรือไม่?")) {
+      try {
+        await deleteDoc(doc(db, "employees", id));
+        if (editingEmpDocId === id) resetEmpForm();
+        fetchStaffs();
+      } catch (err) {
+        console.error("Error deleting employee:", err);
       }
     }
   };
 
-  const handleSetpointChange = (e) => {
-    const val = parseFloat(e.target.value);
-    setP3Setpoint(val);
-    set(ref(db, 'pumpSystem/p3Setpoint'), val);
+  const handleSaveCriteria = async (e) => {
+    e.preventDefault();
+    if (!newCriteriaTitle.trim()) return;
+
+    try {
+      if (editingCriteriaId) {
+        await updateDoc(doc(db, "criteria", editingCriteriaId), {
+          title: newCriteriaTitle
+        });
+      } else {
+        await addDoc(collection(db, "criteria"), {
+          title: newCriteriaTitle,
+          active: true,
+          order: criteriaList.length + 1
+        });
+      }
+      resetCriteriaForm();
+      fetchCriteria();
+    } catch (err) {
+      console.error("Error saving criteria:", err);
+    }
   };
 
+  const handleToggleCriteriaActive = async (crit) => {
+    const currentActiveState = crit.active !== false;
+    try {
+      await updateDoc(doc(db, "criteria", crit.id), {
+        active: !currentActiveState
+      });
+      fetchCriteria();
+    } catch (err) {
+      console.error("Error toggling criteria active state:", err);
+    }
+  };
+
+  const handleStartEditCriteria = (crit) => {
+    setEditingCriteriaId(crit.id);
+    setNewCriteriaTitle(crit.title);
+  };
+
+  const resetCriteriaForm = () => {
+    setEditingCriteriaId(null);
+    setNewCriteriaTitle('');
+  };
+
+  const handleDeleteCriteria = async (id) => {
+    if (window.confirm("คุณต้องการลบหัวข้อการประเมินนี้ใช่หรือไม่?")) {
+      try {
+        await deleteDoc(doc(db, "criteria", id));
+        if (editingCriteriaId === id) resetCriteriaForm();
+        fetchCriteria();
+      } catch (err) {
+        console.error("Error deleting criteria:", err);
+      }
+    }
+  };
+
+  const getFilteredEvaluations = () => {
+    const now = new Date();
+    return evaluationsList.filter(item => {
+      if (selectedStaffFilter !== 'all' && String(item.employeeId) !== String(selectedStaffFilter)) {
+        return false;
+      }
+      if (!item.createdAt) return true;
+      const itemDate = new Date(item.createdAt);
+      if (reportPeriod === 'daily') {
+        return itemDate.toDateString() === now.toDateString();
+      } else if (reportPeriod === 'monthly') {
+        return itemDate.getMonth() === now.getMonth() && itemDate.getFullYear() === now.getFullYear();
+      } else if (reportPeriod === 'yearly') {
+        return itemDate.getFullYear() === now.getFullYear();
+      }
+      return true;
+    });
+  };
+
+  const filteredData = getFilteredEvaluations();
+
+  const calculateReportStats = () => {
+    const totalEvals = filteredData.length;
+    
+    const criteriaStats = {};
+    criteriaList.forEach(crit => {
+      criteriaStats[crit.id] = {
+        title: crit.title,
+        scoresCount: { 1: 0, 2: 0, 3: 0, 4: 0 },
+        totalScoreSum: 0,
+        ratedCount: 0
+      };
+    });
+
+    const staffScoreMap = {};
+
+    filteredData.forEach(item => {
+      const empId = item.employeeId;
+      if (!staffScoreMap[empId]) {
+        staffScoreMap[empId] = { name: item.employeeName, totalScore: 0, count: 0, score1Count: 0, score4Count: 0 };
+      }
+
+      if (item.scores) {
+        Object.entries(item.scores).forEach(([critId, score]) => {
+          if (criteriaStats[critId]) {
+            if (score >= 1 && score <= 4) {
+              criteriaStats[critId].scoresCount[score] += 1;
+              criteriaStats[critId].totalScoreSum += score;
+              criteriaStats[critId].ratedCount += 1;
+            }
+          }
+          staffScoreMap[empId].totalScore += score;
+          staffScoreMap[empId].count += 1;
+          if (score === 1) staffScoreMap[empId].score1Count += 1;
+          if (score === 4) staffScoreMap[empId].score4Count += 1;
+        });
+      }
+    });
+
+    let topStaff = null;
+    let lowestStaff = null;
+    let maxAvg = -1;
+    let maxUnsatisfied = -1;
+
+    Object.entries(staffScoreMap).forEach(([empId, data]) => {
+      const avg = data.count > 0 ? data.totalScore / data.count : 0;
+      if (avg > maxAvg) {
+        maxAvg = avg;
+        topStaff = { ...data, empId, avg };
+      }
+      if (data.score1Count > maxUnsatisfied) {
+        maxUnsatisfied = data.score1Count;
+        lowestStaff = { ...data, empId, unsatisfiedCount: data.score1Count };
+      }
+    });
+
+    return { totalEvals, criteriaStats, topStaff, lowestStaff };
+  };
+
+  const reportStats = calculateReportStats();
+
+  const exportToExcel = () => {
+    let csvContent = "data:text/csv;charset=utf-8,\uFEFF";
+    csvContent += "วันที่-เวลา,รหัสพนักงาน,ชื่อพนักงาน,ข้อเสนอแนะ,คะแนนรวม\n";
+
+    filteredData.forEach(item => {
+      const dateStr = item.createdAt ? new Date(item.createdAt).toLocaleString('th-TH') : '-';
+      const totalScore = item.scores ? Object.values(item.scores).reduce((a, b) => a + b, 0) : 0;
+      const cleanComment = (item.comment || '').replace(/"/g, '""');
+      csvContent += `"${dateStr}","${item.employeeId}","${item.employeeName}","${cleanComment}",${totalScore}\n`;
+    });
+
+    const encodedUri = encodeURI(csvContent);
+    const link = document.createElement("a");
+    link.setAttribute("href", encodedUri);
+    link.setAttribute("download", `รายงานการประเมิน_${reportPeriod}_${new Date().toISOString().slice(0,10)}.csv`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+
+  const exportToPDF = () => {
+    const staffName = selectedStaffFilter === 'all' 
+      ? 'ภาพรวมพนักงานทุกคนรวมกัน' 
+      : staffList.find(s => String(s.employeeId) === String(selectedStaffFilter))?.name || selectedStaffFilter;
+
+    const printWindow = window.open('', '_blank', 'width=900,height=700');
+    
+    let criteriaSummaryHTML = '';
+    Object.values(reportStats.criteriaStats).forEach((stat, idx) => {
+      const rated = stat.ratedCount || 1;
+      const p1 = ((stat.scoresCount[1] / rated) * 100).toFixed(1);
+      const p2 = ((stat.scoresCount[2] / rated) * 100).toFixed(1);
+      const p3 = ((stat.scoresCount[3] / rated) * 100).toFixed(1);
+      const p4 = ((stat.scoresCount[4] / rated) * 100).toFixed(1);
+      const avg = (stat.totalScoreSum / rated).toFixed(2);
+
+      criteriaSummaryHTML += `
+        <div style="margin-bottom: 12px; border-bottom: 1px dashed #cbd5e1; padding-bottom: 8px;">
+          <b>${idx + 1}. ${stat.title}</b> (คะแนนเฉลี่ย: ${avg} / 4.00)<br/>
+          <span style="color: #dc2626;">😡 ไม่พอใจเลย: ${stat.scoresCount[1]} คน (${p1}%)</span> | 
+          <span style="color: #d97706;">😐 พอใจปานกลาง: ${stat.scoresCount[2]} คน (${p2}%)</span> | 
+          <span style="color: #2563eb;">😊 พอใจมาก: ${stat.scoresCount[3]} คน (${p3}%)</span> | 
+          <span style="color: #16a34a;">😍 พอใจมากที่สุด: ${stat.scoresCount[4]} คน (${p4}%)</span>
+        </div>
+      `;
+    });
+
+    printWindow.document.write(`
+      <html>
+        <head>
+          <title>รายงานสรุปผลการประเมิน - การประปา</title>
+          <style>
+            body { font-family: 'Sarabun', sans-serif; padding: 20px; color: #0f172a; }
+            h1 { font-size: 20px; margin-bottom: 5px; color: #0369a1; }
+            h2 { font-size: 16px; margin-top: 20px; color: #0284c7; }
+            p { font-size: 12px; color: #64748b; margin-bottom: 15px; }
+            .card { background: #f0fdf4; border: 1px solid #bbf7d0; padding: 10px; border-radius: 8px; margin-bottom: 10px; font-size: 12px; }
+          </style>
+        </head>
+        <body>
+          <h1>💧 รายงานสรุปผลการประเมินความพึงพอใจ (การประปา)</h1>
+          <p>ช่วงเวลา: <b>${reportPeriod.toUpperCase()}</b> | พนักงาน: <b>${staffName}</b> | ผู้ประเมินทั้งหมด: <b>${reportStats.totalEvals} ครั้ง</b></p>
+          
+          <h2>📊 สรุปผลคะแนนแต่ละหัวข้อ</h2>
+          ${criteriaSummaryHTML || '<p>ยังไม่มีข้อมูลหัวข้อประเมิน</p>'}
+
+          <h2>🏆 สรุปพนักงานดีเด่น & จุดที่ต้องปรับปรุง</h2>
+          <div class="card">
+            ⭐ <b>พนักงานที่ได้รับความพึงพอใจสูงสุด:</b> ${reportStats.topStaff ? `${reportStats.topStaff.name} (รหัส: ${reportStats.topStaff.empId}) - คะแนนเฉลี่ย ${reportStats.topStaff.avg.toFixed(2)}/4.0` : 'ไม่มีข้อมูล'}
+          </div>
+          <div class="card" style="background: #fef2f2; border-color: #fecaca;">
+            ⚠️ <b>พนักงานที่ถูกประเมินว่าไม่พอใจเลยมากที่สุด:</b> ${reportStats.lowestStaff && reportStats.lowestStaff.unsatisfiedCount > 0 ? `${reportStats.lowestStaff.name} (รหัส: ${reportStats.lowestStaff.empId}) - จำนวน ${reportStats.lowestStaff.unsatisfiedCount} ครั้ง` : 'ไม่มีข้อมูล'}
+          </div>
+
+          <script>
+            window.onload = function() { window.print(); }
+          </script>
+        </body>
+      </html>
+    `);
+    printWindow.document.close();
+  };
+
+  const emotionLevels = [
+    { score: 1, emoji: '😡', label: 'ไม่พอใจเลย', sizeClass: 'text-3xl sm:text-4xl md:text-5xl' },
+    { score: 2, emoji: '😐', label: 'พอใจปานกลาง', sizeClass: 'text-4xl sm:text-5xl md:text-6xl' },
+    { score: 3, emoji: '😊', label: 'พอใจมาก', sizeClass: 'text-5xl sm:text-6xl md:text-7xl' },
+    { score: 4, emoji: '😍', label: 'พอใจมากที่สุด', sizeClass: 'text-6xl sm:text-7xl md:text-8xl' }
+  ];
+
+  const visibleCriteriaList = criteriaList.filter(crit => crit.active !== false);
+
   return (
-    <div className="min-h-screen bg-slate-950 text-slate-100 p-6 font-sans relative">
+    <div className="min-h-screen bg-sky-50 flex items-center justify-center p-2 sm:p-4 md:p-8 font-sans">
       
-      {/* --- Modal ใส่รหัสผ่านเฉพาะตอนจะกดสั่งงาน --- */}
-      {showAuthModal && (
-        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center z-50 p-4">
-          <div className="bg-slate-900 border border-slate-800 p-6 rounded-2xl shadow-2xl w-full max-w-md relative animate-in fade-in zoom-in duration-200">
+      {/* 🔐 1. หน้าจอ Login พนักงาน */}
+      {step === 'login' && (
+        <div className="bg-white p-6 sm:p-10 rounded-3xl shadow-xl border border-sky-100 max-w-md w-full text-center relative">
+          <div className="w-16 h-16 sm:w-20 sm:h-20 bg-sky-500 rounded-3xl mx-auto flex items-center justify-center text-white text-3xl sm:text-4xl mb-4 shadow-md shadow-sky-200">
+            💧
+          </div>
+          <h2 className="text-2xl sm:text-3xl font-bold text-sky-900 mb-2">ระบบประเมินความพึงพอใจ</h2>
+          <p className="text-sm sm:text-base text-sky-600/70 mb-6">กรุณากรอกรหัสพนักงานเพื่อเริ่มรับการประเมิน</p>
+          
+          <form onSubmit={handleLogin} className="space-y-4">
+            <input 
+              type="text" 
+              placeholder="กรอกรหัสพนักงาน (เช่น 12348)" 
+              value={inputEmpId}
+              onChange={(e) => setInputEmpId(e.target.value)}
+              className="w-full px-4 py-3.5 rounded-2xl border border-sky-200 bg-sky-50/50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-sky-500 text-center text-lg sm:text-xl font-semibold tracking-wider text-sky-900 placeholder-sky-300"
+              required
+            />
+            {errorMsg && <p className="text-red-500 text-xs sm:text-sm font-medium">{errorMsg}</p>}
             <button 
-              onClick={() => setShowAuthModal(false)}
-              className="absolute top-4 right-4 text-slate-400 hover:text-white"
+              type="submit"
+              className="w-full bg-sky-600 text-white py-3.5 rounded-2xl font-semibold hover:bg-sky-700 transition shadow-lg shadow-sky-200 text-base sm:text-lg"
             >
-              <X className="w-5 h-5" />
+              เข้าสู่หน้าประเมิน
             </button>
-            <div className="flex justify-center mb-3 text-cyan-400">
-              <Lock className="w-10 h-10" />
+          </form>
+
+          <div className="mt-8 pt-4 border-t border-sky-100">
+            <button
+              onClick={() => { setStep('admin-login'); setErrorMsg(''); }}
+              className="text-xs sm:text-sm text-sky-600 hover:text-sky-800 font-medium transition"
+            >
+              ⚙️ เข้าสู่ระบบผู้ดูแลระบบ (Admin)
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* 🔒 2. หน้าจอ Login Admin */}
+      {step === 'admin-login' && (
+        <div className="bg-white p-6 sm:p-10 rounded-3xl shadow-xl border border-sky-100 max-w-md w-full text-center">
+          <div className="w-16 h-16 sm:w-20 sm:h-20 bg-sky-800 rounded-3xl mx-auto flex items-center justify-center text-white text-2xl sm:text-3xl mb-4 shadow-md">
+            🔒
+          </div>
+          <h2 className="text-2xl sm:text-3xl font-bold text-sky-900 mb-2">ผู้ดูแลระบบ (Admin)</h2>
+          <p className="text-sm sm:text-base text-sky-600/70 mb-6">กรุณากรอกรหัส PIN (ค่าเริ่มต้น: 1234)</p>
+          
+          <form onSubmit={handleAdminLogin} className="space-y-4">
+            <input 
+              type="password" 
+              placeholder="PIN Admin" 
+              value={adminPin}
+              onChange={(e) => setAdminPin(e.target.value)}
+              className="w-full px-4 py-3.5 rounded-2xl border border-sky-200 bg-sky-50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-sky-500 text-center text-lg sm:text-xl font-semibold tracking-widest text-sky-900"
+              required
+            />
+            {errorMsg && <p className="text-red-500 text-xs sm:text-sm font-medium">{errorMsg}</p>}
+            <button 
+              type="submit"
+              className="w-full bg-sky-800 text-white py-3.5 rounded-2xl font-semibold hover:bg-sky-900 transition shadow-lg text-base sm:text-lg"
+            >
+              เข้าสู่ระบบ Admin
+            </button>
+            <button 
+              type="button"
+              onClick={() => { setStep('login'); setErrorMsg(''); }}
+              className="w-full text-sky-600 py-2 text-sm sm:text-base hover:underline"
+            >
+              กลับหน้าหลัก
+            </button>
+          </form>
+        </div>
+      )}
+
+      {/* 📊 3. หน้าจอ Admin Dashboard หลัก */}
+      {step === 'admin-dashboard' && (
+        <div className="bg-white p-4 sm:p-8 rounded-3xl shadow-xl border border-sky-100 max-w-5xl w-full">
+          
+          <div className="flex flex-col md:flex-row justify-between md:items-center border-b border-sky-100 pb-4 mb-6 gap-4">
+            <div>
+              <h2 className="text-xl sm:text-2xl font-bold text-sky-900">แผงควบคุมผู้ดูแลระบบ</h2>
+              <p className="text-xs sm:text-sm text-sky-600">จัดการข้อมูลพนักงาน หัวข้อการประเมิน และรายงานสรุป</p>
             </div>
-            <h3 className="text-lg font-bold text-center mb-1 text-white">ยืนยันตัวตนผู้ดูแลระบบ</h3>
-            <p className="text-slate-400 text-xs text-center mb-5">กรุณากรอกรหัสผ่านเพื่อสลับโหมดหรือเปิด-ปิดปั๊มน้ำ</p>
             
-            <form onSubmit={handleVerifyPin} className="space-y-4">
-              <input 
-                type="password" 
-                value={passcode} 
-                onChange={(e) => setPasscode(e.target.value)}
-                placeholder="PIN Code (เช่น 1234)"
-                autoFocus
-                className="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-cyan-400 text-center tracking-widest text-lg"
-              />
-              {loginError && (
-                <p className="text-red-400 text-xs text-center">รหัสผ่านไม่ถูกต้อง! กรุณาลองใหม่อีกครั้ง</p>
-              )}
+            <div className="flex bg-sky-50 p-1.5 rounded-2xl border border-sky-100 space-x-1">
               <button 
-                type="submit"
-                className="w-full bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-bold py-3 rounded-xl transition-all shadow-lg cursor-pointer"
+                onClick={() => setActiveAdminTab('reports')}
+                className={`px-3 sm:px-4 py-2 rounded-xl text-xs sm:text-sm font-semibold transition ${activeAdminTab === 'reports' ? 'bg-sky-600 text-white shadow-sm' : 'text-sky-700 hover:bg-sky-100'}`}
               >
-                ยืนยันคำสั่ง
+                📊 รายงานผล
               </button>
-            </form>
+              <button 
+                onClick={() => setActiveAdminTab('employees')}
+                className={`px-3 sm:px-4 py-2 rounded-xl text-xs sm:text-sm font-semibold transition ${activeAdminTab === 'employees' ? 'bg-sky-600 text-white shadow-sm' : 'text-sky-700 hover:bg-sky-100'}`}
+              >
+                👥 พนักงาน
+              </button>
+              <button 
+                onClick={() => setActiveAdminTab('criteria')}
+                className={`px-3 sm:px-4 py-2 rounded-xl text-xs sm:text-sm font-semibold transition ${activeAdminTab === 'criteria' ? 'bg-sky-600 text-white shadow-sm' : 'text-sky-700 hover:bg-sky-100'}`}
+              >
+                📝 หัวข้อประเมิน
+              </button>
+              <button 
+                onClick={() => setStep('login')}
+                className="px-2.5 sm:px-3 py-2 rounded-xl text-xs sm:text-sm font-semibold text-red-500 hover:bg-red-50 transition"
+              >
+                ออก
+              </button>
+            </div>
           </div>
+
+          {/* TAB 1: รายงานการประเมิน */}
+          {activeAdminTab === 'reports' && (
+            <div className="space-y-6">
+              <div className="bg-sky-50/60 p-4 rounded-2xl border border-sky-100 grid grid-cols-1 md:grid-cols-3 gap-4">
+                <div>
+                  <label className="block text-xs font-semibold text-sky-900 mb-1">ช่วงเวลาสั่งสรุปรายงาน</label>
+                  <select 
+                    value={reportPeriod} 
+                    onChange={(e) => setReportPeriod(e.target.value)}
+                    className="w-full p-2.5 rounded-xl border border-sky-200 text-xs sm:text-sm bg-white text-sky-900 focus:outline-none focus:ring-2 focus:ring-sky-500"
+                  >
+                    <option value="daily">📅 ประจำวัน (วันนี้)</option>
+                    <option value="monthly">📆 ประจำเดือน (เดือนนี้)</option>
+                    <option value="yearly">🗓️ ประจำปี (ปีนี้)</option>
+                    <option value="all">♾️ ทั้งหมด</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-semibold text-sky-900 mb-1">เลือกพนักงาน</label>
+                  <select 
+                    value={selectedStaffFilter} 
+                    onChange={(e) => setSelectedStaffFilter(e.target.value)}
+                    className="w-full p-2.5 rounded-xl border border-sky-200 text-xs sm:text-sm bg-white text-sky-900 focus:outline-none focus:ring-2 focus:ring-sky-500"
+                  >
+                    <option value="all">👥 ภาพรวมพนักงานทุกคนรวมกัน</option>
+                    {staffList.map(s => (
+                      <option key={s.id} value={s.employeeId}>👤 {s.name} ({s.employeeId})</option>
+                    ))}
+                  </select>
+                </div>
+
+                <div className="flex items-end space-x-2">
+                  <button 
+                    onClick={exportToExcel}
+                    className="flex-1 bg-emerald-600 hover:bg-emerald-700 text-white text-xs sm:text-sm py-2.5 px-3 rounded-xl font-semibold transition shadow-md flex items-center justify-center gap-1"
+                  >
+                    📥 Export Excel
+                  </button>
+                  <button 
+                    onClick={exportToPDF}
+                    className="flex-1 bg-sky-700 hover:bg-sky-800 text-white text-xs sm:text-sm py-2.5 px-3 rounded-xl font-semibold transition shadow-md flex items-center justify-center gap-1"
+                  >
+                    🖨️ เปิดรายงาน PDF
+                  </button>
+                </div>
+              </div>
+
+              {/* สรุปสถิติคะแนนแต่ละหัวข้อ */}
+              <div className="bg-white p-4 sm:p-6 rounded-2xl border border-sky-200 shadow-sm space-y-4">
+                <h3 className="text-xs sm:text-sm font-bold text-sky-900 border-b border-sky-100 pb-2">📊 สรุปผลการประเมินแยกตามหัวข้อ (คะแนนและเปอร์เซ็นต์)</h3>
+                
+                {Object.keys(reportStats.criteriaStats).length === 0 ? (
+                  <p className="text-xs text-slate-400 text-center py-4">ยังไม่มีข้อมูลหัวข้อการประเมิน</p>
+                ) : (
+                  <div className="space-y-4">
+                    {Object.values(reportStats.criteriaStats).map((stat, idx) => {
+                      const rated = stat.ratedCount || 1;
+                      const p1 = ((stat.scoresCount[1] / rated) * 100).toFixed(1);
+                      const p2 = ((stat.scoresCount[2] / rated) * 100).toFixed(1);
+                      const p3 = ((stat.scoresCount[3] / rated) * 100).toFixed(1);
+                      const p4 = ((stat.scoresCount[4] / rated) * 100).toFixed(1);
+                      const avg = (stat.totalScoreSum / rated).toFixed(2);
+
+                      return (
+                        <div key={idx} className="bg-sky-50/50 p-3.5 rounded-xl border border-sky-100 space-y-2">
+                          <div className="flex justify-between items-center text-xs sm:text-sm">
+                            <span className="font-bold text-sky-900">{idx + 1}. {stat.title}</span>
+                            <span className="bg-sky-200 text-sky-800 px-2 py-0.5 rounded-md font-bold">คะแนนเฉลี่ย: {avg} / 4.00</span>
+                          </div>
+                          <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-[11px] sm:text-xs">
+                            <div className="bg-white p-2 rounded-lg border border-red-100 text-red-700">
+                              😡 ไม่พอใจเลย: <b>{stat.scoresCount[1]} คน</b> ({p1}%)
+                            </div>
+                            <div className="bg-white p-2 rounded-lg border border-amber-100 text-amber-700">
+                              😐 พอใจปานกลาง: <b>{stat.scoresCount[2]} คน</b> ({p2}%)
+                            </div>
+                            <div className="bg-white p-2 rounded-lg border border-blue-100 text-blue-700">
+                              😊 พอใจมาก: <b>{stat.scoresCount[3]} คน</b> ({p3}%)
+                            </div>
+                            <div className="bg-white p-2 rounded-lg border border-emerald-100 text-emerald-700">
+                              😍 พอใจมากที่สุด: <b>{stat.scoresCount[4]} คน</b> ({p4}%)
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+
+              {/* สรุปพนักงานสูงสุดและต่ำสุด */}
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div className="bg-emerald-50/70 p-4 rounded-2xl border border-emerald-200">
+                  <h4 className="text-xs sm:text-sm font-bold text-emerald-900 mb-1">⭐ พนักงานที่ได้รับความพอใจสูงสุด (ดีเยี่ยม)</h4>
+                  {reportStats.topStaff ? (
+                    <div className="text-xs sm:text-sm text-emerald-800 space-y-1">
+                      <p><b>ชื่อ:</b> {reportStats.topStaff.name} (รหัส: {reportStats.topStaff.empId})</p>
+                      <p><b>คะแนนเฉลี่ยรวม:</b> {reportStats.topStaff.avg.toFixed(2)} / 4.00 คะแนน</p>
+                    </div>
+                  ) : (
+                    <p className="text-xs text-slate-400">ยังไม่มีข้อมูลการประเมิน</p>
+                  )}
+                </div>
+
+                <div className="bg-red-50/70 p-4 rounded-2xl border border-red-200">
+                  <h4 className="text-xs sm:text-sm font-bold text-red-900 mb-1">⚠️ พนักงานที่ถูกประเมินไม่พอใจเลยมากที่สุด</h4>
+                  {reportStats.lowestStaff && reportStats.lowestStaff.unsatisfiedCount > 0 ? (
+                    <div className="text-xs sm:text-sm text-red-800 space-y-1">
+                      <p><b>ชื่อ:</b> {reportStats.lowestStaff.name} (รหัส: {reportStats.lowestStaff.empId})</p>
+                      <p><b>จำนวนครั้งที่ไม่พอใจ:</b> {reportStats.lowestStaff.unsatisfiedCount} ครั้ง</p>
+                    </div>
+                  ) : (
+                    <p className="text-xs text-slate-500">ยอดเยี่ยม! ไม่มีรายการไม่พอใจเลยในช่วงเวลานี้</p>
+                  )}
+                </div>
+              </div>
+
+              {/* ตารางแสดงรายละเอียดประวัติ */}
+              <div className="overflow-x-auto">
+                <h3 className="text-xs sm:text-sm font-bold text-sky-900 mb-2">📋 ประวัติการประเมินย้อนหลัง</h3>
+                <table className="w-full text-left text-xs sm:text-sm border-collapse">
+                  <thead>
+                    <tr className="bg-sky-100/70 text-sky-900 border-b border-sky-200">
+                      <th className="p-3 rounded-tl-xl">วันที่-เวลา</th>
+                      <th className="p-3">รหัส</th>
+                      <th className="p-3">ชื่อพนักงาน</th>
+                      <th className="p-3">ข้อเสนอแนะ</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-sky-100">
+                    {filteredData.length === 0 ? (
+                      <tr>
+                        <td colSpan="4" className="text-center p-8 text-sky-400">ไม่พบข้อมูลการประเมินตามเงื่อนไขที่เลือก</td>
+                      </tr>
+                    ) : (
+                      filteredData.map((item, idx) => (
+                        <tr key={item.id || idx} className="hover:bg-sky-50/50">
+                          <td className="p-3 text-sky-900">
+                            {item.createdAt ? new Date(item.createdAt).toLocaleString('th-TH') : '-'}
+                          </td>
+                          <td className="p-3 font-semibold text-sky-800">{item.employeeId}</td>
+                          <td className="p-3 font-medium text-sky-900">{item.employeeName}</td>
+                          <td className="p-3 text-slate-600 italic">{item.comment || '-'}</td>
+                        </tr>
+                      ))
+                    )}
+                  </tbody>
+                </table>
+              </div>
+
+            </div>
+          )}
+
+          {/* TAB 2: จัดการพนักงาน */}
+          {activeAdminTab === 'employees' && (
+            <div className="space-y-6">
+              <form onSubmit={handleSaveEmployee} className={`p-4 rounded-2xl border transition ${editingEmpDocId ? 'bg-amber-50/70 border-amber-200' : 'bg-sky-50/60 border-sky-100'} space-y-3`}>
+                <div className="flex justify-between items-center mb-1">
+                  <h3 className={`text-xs sm:text-sm font-bold ${editingEmpDocId ? 'text-amber-900' : 'text-sky-900'}`}>
+                    {editingEmpDocId ? '✏️ แก้ไขข้อมูลพนักงาน' : '➕ เพิ่มข้อมูลพนักงานใหม่'}
+                  </h3>
+                  {editingEmpDocId && (
+                    <button 
+                      type="button" 
+                      onClick={resetEmpForm}
+                      className="text-xs text-slate-500 hover:text-slate-800 underline"
+                    >
+                      ยกเลิกการแก้ไข
+                    </button>
+                  )}
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                  <input 
+                    type="text" 
+                    placeholder="รหัสพนักงาน (เช่น 12349)"
+                    value={newEmpId}
+                    onChange={(e) => setNewEmpId(e.target.value)}
+                    className="p-2.5 rounded-xl border border-sky-200 text-xs sm:text-sm focus:outline-none focus:ring-2 focus:ring-sky-500 bg-white"
+                    required
+                  />
+                  <input 
+                    type="text" 
+                    placeholder="ชื่อ-นามสกุล"
+                    value={newEmpName}
+                    onChange={(e) => setNewEmpName(e.target.value)}
+                    className="p-2.5 rounded-xl border border-sky-200 text-xs sm:text-sm focus:outline-none focus:ring-2 focus:ring-sky-500 bg-white"
+                    required
+                  />
+                  <input 
+                    type="text" 
+                    placeholder="ตำแหน่ง (เช่น เจ้าหน้าที่บริการ)"
+                    value={newEmpPosition}
+                    onChange={(e) => setNewEmpPosition(e.target.value)}
+                    className="p-2.5 rounded-xl border border-sky-200 text-xs sm:text-sm focus:outline-none focus:ring-2 focus:ring-sky-500 bg-white"
+                  />
+                  
+                  <div className="flex flex-col space-y-1">
+                    <label className="text-[11px] text-sky-800 font-semibold">เลือกรูปภาพพนักงานจากเครื่อง:</label>
+                    <input 
+                      type="file" 
+                      accept="image/*"
+                      onChange={handleImageChange}
+                      className="p-1.5 rounded-xl border border-sky-200 text-xs bg-white text-sky-900 file:mr-2 file:py-1 file:px-3 file:rounded-lg file:border-0 file:text-xs file:font-semibold file:bg-sky-100 file:text-sky-700 hover:file:bg-sky-200"
+                    />
+                  </div>
+                </div>
+
+                {newEmpPhoto && (
+                  <div className="flex items-center space-x-3 pt-2">
+                    <span className="text-xs text-sky-800">รูปตัวอย่าง:</span>
+                    <img src={newEmpPhoto} alt="Preview" className="w-16 h-16 rounded-full object-cover border-2 border-sky-300 shadow-sm" />
+                  </div>
+                )}
+
+                <div className="flex gap-2">
+                  <button 
+                    type="submit"
+                    className={`flex-1 text-white py-2.5 rounded-xl font-semibold transition text-xs sm:text-sm shadow-md ${editingEmpDocId ? 'bg-amber-600 hover:bg-amber-700' : 'bg-sky-600 hover:bg-sky-700'}`}
+                  >
+                    {editingEmpDocId ? 'บันทึกการแก้ไข' : 'บันทึกข้อมูลพนักงาน'}
+                  </button>
+                </div>
+              </form>
+
+              <div className="space-y-3">
+                <h3 className="text-xs sm:text-sm font-bold text-sky-900">รายชื่อพนักงานทั้งหมด ({staffList.length} คน)</h3>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                  {staffList.map(emp => (
+                    <div key={emp.id} className={`flex items-center justify-between p-3 bg-white border rounded-2xl shadow-2xs transition ${editingEmpDocId === emp.id ? 'border-amber-400 ring-2 ring-amber-100' : 'border-sky-100'}`}>
+                      <div className="flex items-center space-x-3">
+                        <img src={emp.photoUrl} alt={emp.name} className="w-14 h-14 rounded-full object-cover border-2 border-sky-100 shadow-xs" />
+                        <div>
+                          <p className="text-xs sm:text-sm font-bold text-sky-900">{emp.name}</p>
+                          <p className="text-[10px] sm:text-xs text-sky-600">รหัส: {emp.employeeId} | {emp.position}</p>
+                        </div>
+                      </div>
+                      <div className="flex space-x-1">
+                        <button 
+                          onClick={() => handleStartEditEmployee(emp)}
+                          className="text-amber-600 hover:text-amber-800 text-xs font-semibold px-2 py-1 rounded-lg hover:bg-amber-50 transition"
+                        >
+                          แก้ไข
+                        </button>
+                        <button 
+                          onClick={() => handleDeleteEmployee(emp.id)}
+                          className="text-red-500 hover:text-red-700 text-xs font-semibold px-2 py-1 rounded-lg hover:bg-red-50 transition"
+                        >
+                          ลบ
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* TAB 3: จัดการหัวข้อประเมิน */}
+          {activeAdminTab === 'criteria' && (
+            <div className="space-y-6">
+              <form onSubmit={handleSaveCriteria} className="space-y-2">
+                {editingCriteriaId && (
+                  <div className="flex justify-between items-center px-1">
+                    <span className="text-xs font-semibold text-amber-800">✏️ กำลังแก้ไขหัวข้อการประเมิน</span>
+                    <button 
+                      type="button" 
+                      onClick={resetCriteriaForm}
+                      className="text-xs text-slate-500 hover:text-slate-800 underline"
+                    >
+                      ยกเลิก
+                    </button>
+                  </div>
+                )}
+                <div className="flex gap-2">
+                  <input 
+                    type="text"
+                    placeholder="ชื่อหัวข้อการประเมินใหม่..."
+                    value={newCriteriaTitle}
+                    onChange={(e) => setNewCriteriaTitle(e.target.value)}
+                    className="flex-1 px-4 py-2.5 rounded-xl border border-sky-200 text-xs sm:text-sm focus:outline-none focus:ring-2 focus:ring-sky-500"
+                    required
+                  />
+                  <button 
+                    type="submit"
+                    className={`text-white px-5 py-2.5 rounded-xl font-semibold transition text-xs sm:text-sm shadow-md ${editingCriteriaId ? 'bg-amber-600 hover:bg-amber-700' : 'bg-sky-600 hover:bg-sky-700'}`}
+                  >
+                    {editingCriteriaId ? 'บันทึก' : 'เพิ่มหัวข้อ'}
+                  </button>
+                </div>
+              </form>
+
+              <div className="space-y-2">
+                {criteriaList.map((crit, index) => {
+                  const isVisible = crit.active !== false;
+                  return (
+                    <div key={crit.id} className={`flex justify-between items-center border p-3.5 rounded-2xl transition ${editingCriteriaId === crit.id ? 'bg-amber-50/80 border-amber-300' : isVisible ? 'bg-sky-50/60 border-sky-100' : 'bg-slate-100 border-slate-200 opacity-60'}`}>
+                      <div className="flex items-center space-x-2">
+                        <span className="text-xs sm:text-sm font-semibold text-sky-900">{index + 1}. {crit.title}</span>
+                        {!isVisible && <span className="text-[10px] bg-slate-200 text-slate-600 px-2 py-0.5 rounded-full font-medium">(ซ่อนอยู่)</span>}
+                      </div>
+                      
+                      <div className="flex space-x-1">
+                        <button 
+                          type="button"
+                          onClick={() => handleToggleCriteriaActive(crit)}
+                          className={`text-xs font-semibold px-2.5 py-1 rounded-lg transition ${isVisible ? 'bg-emerald-100 text-emerald-700 hover:bg-emerald-200' : 'bg-slate-200 text-slate-700 hover:bg-slate-300'}`}
+                        >
+                          {isVisible ? '👁️ แสดง' : '🙈 ซ่อน'}
+                        </button>
+                        <button 
+                          onClick={() => handleStartEditCriteria(crit)}
+                          className="text-amber-600 hover:text-amber-800 text-xs font-semibold px-2.5 py-1 rounded-lg hover:bg-amber-50 transition"
+                        >
+                          แก้ไข
+                        </button>
+                        <button 
+                          onClick={() => handleDeleteCriteria(crit.id)}
+                          className="text-red-500 hover:text-red-700 text-xs font-semibold px-2.5 py-1 rounded-lg hover:bg-red-50 transition"
+                        >
+                          ลบ
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
         </div>
       )}
 
-      {/* --- Header --- */}
-      <header className="flex flex-col md:flex-row justify-between items-center bg-slate-900 border border-slate-800 rounded-2xl p-6 mb-6 shadow-xl">
-        <div>
-          <h1 className="text-2xl font-bold bg-gradient-to-r from-cyan-400 to-blue-500 bg-clip-text text-transparent flex items-center gap-2">
-            <Gauge className="text-cyan-400 w-8 h-8" /> Smart Pump Control Dashboard (บ้านไผ่ล้อม)
-          </h1>
-          <p className="text-slate-400 text-sm mt-1">ระบบควบคุมและมอนิเตอร์ปั๊มน้ำแรงดันปลายสายแบบเรียลไทม์ (Public View)</p>
-        </div>
-        
-        {/* สถานะการเชื่อมต่อ & โหมด */}
-        <div className="flex items-center gap-4 mt-4 md:mt-0">
-          <div className="flex items-center gap-2 bg-slate-800 px-4 py-2 rounded-xl border border-slate-700">
-            <span className={`w-3 h-3 rounded-full ${pumpStatus ? 'bg-emerald-400 animate-pulse' : 'bg-red-500'}`}></span>
-            <span className="text-sm font-medium">{pumpStatus ? 'PUMP RUNNING' : 'PUMP STOPPED'}</span>
-          </div>
+      {/* ⭐ 4. หน้าจอประเมินความพึงพอใจสำหรับลูกค้า (ปรับไอคอนให้ขยายเด่นชัด) */}
+      {step === 'evaluating' && currentStaff && (
+        <div className="bg-white p-4 sm:p-8 md:p-10 rounded-3xl shadow-xl border border-sky-100 w-full max-w-4xl md:max-w-5xl my-auto">
+          <div className="flex flex-col items-center border-b border-sky-100 pb-6 mb-8 relative">
+            <button
+              type="button"
+              onClick={() => {
+                setStep('login');
+                setInputEmpId('');
+                setCurrentStaff(null);
+                setScores({});
+                setComment('');
+              }}
+              className="absolute top-0 right-0 text-xs sm:text-sm text-sky-600 hover:text-red-500 border border-sky-200 bg-sky-50 px-3 py-1.5 rounded-xl transition font-semibold"
+            >
+              ออกจากระบบ
+            </button>
 
-          <button 
-            onClick={() => requestAction('toggleMode')}
-            className={`px-4 py-2 rounded-xl text-sm font-semibold transition-all border cursor-pointer ${
-              mode === 'AUTO' 
-                ? 'bg-cyan-500/20 text-cyan-400 border-cyan-500/50 hover:bg-cyan-500/30' 
-                : 'bg-blue-600 text-white border-blue-500 hover:bg-blue-500'
-            }`}
-          >
-            Mode: {mode} 🔒
-          </button>
-        </div>
-      </header>
-
-      {/* --- Alarm Banner (กรณีไฟดับ / ออฟไลน์) --- */}
-      {isOfflineOrPowerLoss && (
-        <div className="bg-red-500/20 border border-red-500 text-red-300 p-4 rounded-xl mb-6 flex items-center gap-3 animate-pulse">
-          <WifiOff className="w-6 h-6 shrink-0 text-red-400" />
-          <div>
-            <strong>⚠️ แจ้งเตือนความผิดปกติวิกฤต:</strong> ระบบขาดการติดต่อจากอุปกรณ์ (อาจเกิดเหตุการณ์ **ไฟดับ** หรือ **อินเทอร์เน็ตหลุด** เกิน 5 นาที)
-          </div>
-        </div>
-      )}
-
-      {alarm && (
-        <div className="bg-amber-500/10 border border-amber-500/50 text-amber-400 p-4 rounded-xl mb-6 flex items-center gap-3">
-          <AlertTriangle className="w-6 h-6 shrink-0" />
-          <span><strong>แจ้งเตือนสถานะการทำงาน:</strong> {alarm}</span>
-        </div>
-      )}
-
-      {/* --- Main Grid --- */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-
-        {/* 1. ควบคุมแรงดัน P3 & Setpoint + แสดงเวลาข้อมูลส่งมา */}
-        <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 shadow-lg flex flex-col justify-between">
-          <div>
-            <h2 className="text-lg font-semibold text-cyan-400 flex items-center gap-2 mb-4">
-              <Sliders className="w-5 h-5" /> ควบคุมแรงดันปลายสาย (บ้านไผ่ล้อม)
-            </h2>
-            
-            <div className="bg-slate-950 p-4 rounded-xl border border-slate-800 mb-4 text-center relative">
-              <span className="text-slate-400 text-xs block uppercase tracking-wider">แรงดันจริงปลายสาย (บ้านไผ่ล้อม)</span>
-              <span className="text-4xl font-extrabold text-cyan-400 mt-1 block">{p3Actual.toFixed(2)}</span>
-              <span className="text-xs text-slate-500">Bar</span>
-              
-              {/* แสดงเวลาที่ข้อมูลส่งมาจาก Firebase */}
-              <div className="mt-3 pt-2 border-t border-slate-900 flex items-center justify-center gap-1.5 text-xs text-slate-400">
-                <Clock className="w-3.5 h-3.5 text-cyan-400" />
-                <span>อัปเดตล่าสุด: {lastUpdated ? new Date(lastUpdated).toLocaleTimeString() : 'กำลังรอข้อมูล...'}</span>
+            {/* รูปโปรไฟล์พนักงาน */}
+            <div className="relative mb-4">
+              <img 
+                src={currentStaff.photoUrl} 
+                alt={currentStaff.name} 
+                className="w-48 h-48 sm:w-56 sm:h-56 md:w-64 md:h-64 rounded-full object-cover shadow-2xl border-4 border-sky-300 p-1.5 bg-white"
+              />
+              <div className="absolute bottom-2 right-3 bg-sky-500 text-white p-2.5 rounded-full shadow-lg text-lg">
+                💧
               </div>
             </div>
 
-            <div className="mb-4">
-              <label className="text-sm text-slate-300 block mb-2">ตั้งค่าแรงดันเป้าหมาย (Setpoint): <strong className="text-cyan-400">{p3Setpoint} Bar</strong></label>
-              <input 
-                type="range" 
-                min="0.5" 
-                max="6.0" 
-                step="0.1" 
-                value={p3Setpoint} 
-                onChange={handleSetpointChange}
-                className="w-full accent-cyan-400 bg-slate-800 cursor-pointer"
+            <h2 className="text-2xl sm:text-3xl md:text-4xl font-bold text-sky-900 text-center">{currentStaff.name}</h2>
+            <p className="text-base sm:text-lg text-sky-600 font-semibold mt-1 text-center">{currentStaff.position}</p>
+          </div>
+
+          <form onSubmit={handleSubmitScore} className="space-y-8">
+            {visibleCriteriaList.length === 0 ? (
+              <p className="text-center text-slate-400 py-8 text-base">ไม่มีหัวข้อการประเมินในขณะนี้</p>
+            ) : (
+              visibleCriteriaList.map((crit, index) => (
+                <div key={crit.id} className="bg-sky-50/70 border border-sky-100 p-5 sm:p-6 rounded-3xl shadow-xs">
+                  <p className="font-bold text-sky-900 mb-4 text-center text-lg sm:text-xl md:text-2xl">{index + 1}. {crit.title}</p>
+                  
+                  {/* ปุ่มไอคอนประเมิน ปรับให้ขยายใหญ่โดดเด่นทั้งเวลากดเลือก (Selected) และชี้นำ (Hover) */}
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 sm:gap-4 py-4">
+                    {emotionLevels.map((item) => {
+                      const isSelected = scores[crit.id] === item.score;
+                      return (
+                        <button
+                          type="button"
+                          key={item.score}
+                          onClick={() => setScores({ ...scores, [crit.id]: item.score })}
+                          className={`flex flex-col items-center justify-center p-4 sm:p-6 rounded-2xl sm:rounded-3xl cursor-pointer transition-all duration-300 transform ${
+                            isSelected 
+                              ? 'bg-sky-200 scale-125 md:scale-130 shadow-2xl border-2 sm:border-4 border-sky-500 ring-4 ring-sky-300/80 -translate-y-2 z-10' 
+                              : 'bg-white hover:bg-sky-100/80 opacity-60 hover:opacity-100 border border-sky-100 hover:scale-115 hover:-translate-y-1'
+                          }`}
+                        >
+                          <span className={`${item.sizeClass} mb-2 transition-transform duration-300 drop-shadow-sm`}>
+                            {item.emoji}
+                          </span>
+                          <span className={`text-xs sm:text-sm md:text-base font-bold text-center transition-colors ${
+                            isSelected ? 'text-sky-950 font-extrabold' : 'text-sky-800'
+                          }`}>
+                            {item.label}
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              ))
+            )}
+
+            <div>
+              <textarea 
+                placeholder="ข้อเสนอแนะเพิ่มเติม (ถ้ามี)..."
+                value={comment}
+                onChange={(e) => setComment(e.target.value)}
+                className="w-full p-4 rounded-2xl border border-sky-200 bg-sky-50/30 focus:bg-white focus:outline-none focus:ring-2 focus:ring-sky-500 text-base sm:text-lg text-sky-900 placeholder-sky-300"
+                rows="3"
               />
             </div>
-          </div>
-          <div className="text-xs text-slate-500 bg-slate-950/50 p-3 rounded-lg">
-            *ระบบจะปรับรอบ VFD อัตโนมัติเพื่อให้แรงดันที่ปลายสายตรงกับ Setpoint ที่กำหนด
-          </div>
+
+            <button 
+              type="submit"
+              className="w-full bg-sky-600 text-white py-4 sm:py-5 rounded-2xl font-bold hover:bg-sky-700 transition shadow-xl shadow-sky-200 text-lg sm:text-xl md:text-2xl"
+            >
+              ยืนยันการประเมิน
+            </button>
+          </form>
         </div>
+      )}
 
-        {/* 2. สั่งงานเปิด-ปิดออนไลน์ (Manual Control) */}
-        <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 shadow-lg flex flex-col justify-between">
-          <div>
-            <h2 className="text-lg font-semibold text-cyan-400 flex items-center gap-2 mb-4">
-              <Power className="w-5 h-5" /> ควบคุมปั๊มออนไลน์ (Online Switch)
-            </h2>
-
-            <div className="flex flex-col items-center justify-center my-6">
-              <button 
-                onClick={() => requestAction('togglePower')}
-                className={`w-32 h-32 rounded-full flex flex-col items-center justify-center transition-all shadow-2xl border-4 cursor-pointer ${
-                  pumpStatus 
-                    ? 'bg-emerald-500/20 border-emerald-500 text-emerald-400 shadow-emerald-500/20' 
-                    : 'bg-red-500/20 border-red-500 text-red-400 shadow-red-500/20'
-                }`}
-              >
-                <Power className={`w-12 h-12 mb-1 ${pumpStatus ? 'text-emerald-400 animate-pulse' : 'text-red-400'}`} />
-                <span className="text-sm font-bold">{pumpStatus ? 'ON' : 'OFF'} 🔒</span>
-              </button>
-              <span className="text-xs text-slate-400 mt-3 text-center">
-                (คลิกเพื่อเปิด-ปิดปั๊ม ระบบจะถามรหัสผ่านก่อนสั่งงาน)
-              </span>
-            </div>
-          </div>
-
-          <div className="bg-slate-950 p-3 rounded-xl border border-slate-800 flex justify-between items-center text-sm">
-            <span className="text-slate-400">ความถี่รอบปั๊ม (VFD):</span>
-            <span className="font-bold text-cyan-400">{frequency.toFixed(1)} Hz</span>
-          </div>
+      {/* 🎉 5. หน้าจอขอบคุณ */}
+      {step === 'success' && (
+        <div className="bg-white p-8 sm:p-12 rounded-3xl shadow-xl border border-sky-100 max-w-md w-full text-center space-y-4">
+          <div className="text-6xl sm:text-7xl animate-bounce">💧</div>
+          <h2 className="text-2xl sm:text-3xl font-bold text-sky-900">ขอบคุณสำหรับการประเมินครับ!</h2>
+          <p className="text-sm sm:text-base text-sky-600/70">ระบบกำลังพากลับสู่หน้าประเมิน...</p>
         </div>
+      )}
 
-        {/* 3. รายงานกระแส & ความร้อนมอเตอร์ */}
-        <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 shadow-lg flex flex-col justify-between">
-          <div>
-            <h2 className="text-lg font-semibold text-cyan-400 flex items-center gap-2 mb-4">
-              <Activity className="w-5 h-5" /> สถานะมอเตอร์ & ความปลอดภัย
-            </h2>
-
-            {/* กระแสไฟฟ้า */}
-            <div className="bg-slate-950 p-4 rounded-xl border border-slate-800 mb-3 flex items-center justify-between">
-              <div className="flex items-center gap-3">
-                <div className="p-3 bg-cyan-500/10 rounded-lg text-cyan-400">
-                  <Zap className="w-6 h-6" />
-                </div>
-                <div>
-                  <span className="text-xs text-slate-400 block">กระแสไฟฟ้ามอเตอร์</span>
-                  <span className="text-xl font-bold text-slate-100">{current.toFixed(1)} A</span>
-                </div>
-              </div>
-              <span className="text-xs text-emerald-400 bg-emerald-500/10 px-2 py-1 rounded">Normal</span>
-            </div>
-
-            {/* อุณหภูมิความร้อน */}
-            <div className="bg-slate-950 p-4 rounded-xl border border-slate-800 flex items-center justify-between">
-              <div className="flex items-center gap-3">
-                <div className="p-3 bg-blue-500/10 rounded-lg text-blue-400">
-                  <Thermometer className="w-6 h-6" />
-                </div>
-                <div>
-                  <span className="text-xs text-slate-400 block">อุณหภูมิมอเตอร์ / VFD</span>
-                  <span className="text-xl font-bold text-slate-100">{temperature.toFixed(1)} °C</span>
-                </div>
-              </div>
-              <span className={`text-xs px-2 py-1 rounded ${temperature > 75 ? 'bg-red-500/10 text-red-400' : 'bg-emerald-500/10 text-emerald-400'}`}>
-                {temperature > 75 ? 'High Temp' : 'Safe'}
-              </span>
-            </div>
-          </div>
-
-          <div className="text-xs text-slate-500 mt-4 pt-3 border-t border-slate-800 flex justify-between">
-            <span>Database: Firebase Realtime</span>
-            <span className="text-cyan-400 flex items-center gap-1"><RefreshCw className="w-3 h-3 animate-spin"/> Live Sync</span>
-          </div>
-        </div>
-
-      </div>
     </div>
   );
 }
