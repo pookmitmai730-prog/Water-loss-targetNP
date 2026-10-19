@@ -559,9 +559,71 @@ function WaterLossDashboard() {
           </div>
         )}
 
-        {/* TAB 3: สรุปผลภาพรวมระบบ และตารางรายงานแยกตาม MM */}
+        {/* TAB 3: สรุปผลและตารางเร่งด่วน */}
         {activeTab === 3 && (
           <div>
+            {/* ส่วนที่ 1: การกรอกและบันทึกข้อมูล (คงไว้เหมือนเดิม) */}
+            <div style={{ background: '#f8fafc', padding: '15px 20px', borderRadius: '8px', border: '1px solid #e2e8f0', marginBottom: '20px' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '15px' }}>
+                <h3 style={{ margin: '0', color: '#2d3748' }}>✏️ บันทึกและคำนวณข้อมูลประจำเดือน ({selectedMonth})</h3>
+                <button onClick={handleSave} style={{ padding: '8px 20px', background: '#2b6cb0', color: 'white', border: 'none', borderRadius: '6px', cursor: 'pointer', fontWeight: 'bold' }}>
+                  💾 บันทึกข้อมูลเข้าฐานข้อมูล
+                </button>
+              </div>
+              <div style={{ overflowX: 'auto' }}>
+                <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left', background: 'white', fontSize: '14px' }}>
+                  <thead>
+                    <tr style={{ background: '#edf2f7', borderBottom: '2px solid #cbd5e0' }}>
+                      <th style={{ padding: '8px' }}>ประเภท</th>
+                      <th style={{ padding: '8px' }}>ชื่อโซน</th>
+                      <th style={{ padding: '8px' }}>น้ำจ่ายเข้า (คิว)</th>
+                      <th style={{ padding: '8px' }}>น้ำจำหน่าย (คิว)</th>
+                      <th style={{ padding: '8px' }}>สูญเสีย (คิว)</th>
+                      <th style={{ padding: '8px' }}>สูญเสีย (%)</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {calculatedNodes.map(node => {
+                      const rec = records[node.id] || { qin: '', qmeter: '' };
+                      const hasFormula = customFormulas.some(f => f.targetDmaId === node.id);
+                      const hasChildren = nodes.some(n => n.parentId === node.id);
+                      const isAutoCalculated = hasFormula || hasChildren;
+
+                      return (
+                        <tr key={node.id} style={{ borderBottom: '1px solid #e2e8f0' }}>
+                          <td style={{ padding: '8px' }}><strong>{node.type}</strong></td>
+                          <td style={{ padding: '8px' }}>{node.name}</td>
+                          <td style={{ padding: '8px' }}>
+                            <input
+                              type="number"
+                              value={isAutoCalculated ? node.qin : rec.qin}
+                              disabled={isAutoCalculated}
+                              onChange={(e) => handleInputChange(node.id, 'qin', e.target.value)}
+                              placeholder={isAutoCalculated ? 'คำนวณให้อัตโนมัติ' : 'กรอกคิว'}
+                              style={{ width: '130px', padding: '4px', background: isAutoCalculated ? '#edf2f7' : 'white', border: '1px solid #cbd5e0', borderRadius: '4px' }}
+                            />
+                          </td>
+                          <td style={{ padding: '8px' }}>
+                            <input
+                              type="number"
+                              value={isAutoCalculated ? node.qmeter : rec.qmeter}
+                              disabled={isAutoCalculated}
+                              onChange={(e) => handleInputChange(node.id, 'qmeter', e.target.value)}
+                              placeholder={isAutoCalculated ? 'คำนวณให้อัตโนมัติ' : 'กรอกคิว'}
+                              style={{ width: '130px', padding: '4px', background: isAutoCalculated ? '#edf2f7' : 'white', border: '1px solid #cbd5e0', borderRadius: '4px' }}
+                            />
+                          </td>
+                          <td style={{ padding: '8px', color: '#c53030', fontWeight: 'bold' }}>{node.lossVol.toLocaleString()}</td>
+                          <td style={{ padding: '8px', color: '#c53030', fontWeight: 'bold' }}>{node.lossPct.toFixed(2)}%</td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            {/* ส่วนที่ 2: สรุปภาพรวมระบบ */}
             <div style={{ background: 'linear-gradient(135deg, #ebf8ff 0%, #eef2f7 100%)', padding: '20px 25px', borderRadius: '12px', border: '1px solid #bee3f8', marginBottom: '25px', boxShadow: '0 4px 6px rgba(0,0,0,0.02)' }}>
               <h3 style={{ margin: '0 0 12px 0', color: '#1e3a8a', fontSize: '18px' }}>📊 สรุปผลการดำเนินงานภาพรวมระบบประจำเดือน {selectedMonth}</h3>
               <p style={{ fontSize: '13px', color: '#4a5568', fontStyle: 'italic', marginBottom: '10px' }}>
@@ -598,6 +660,7 @@ function WaterLossDashboard() {
               </div>
             </div>
 
+            {/* ส่วนที่ 3: ตารางรายงานเร่งด่วนแยกตาม MM */}
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
               <h3 style={{ color: '#1e293b', margin: '0', fontSize: '17px' }}>📋 ตารางรายงานและจัดลำดับพื้นที่เร่งด่วน (แยกตามสถานี MM)</h3>
               <div style={{ display: 'flex', gap: '10px', fontSize: '12px' }}>
@@ -657,7 +720,7 @@ function WaterLossDashboard() {
                         <tbody>
                           {sortedMmGroupNodes.map((node, index) => {
                             const isLossHigher = node.lossPct > targetLossPercent;
-                            // เงื่อนไข: ถ้าเป้าหมายมากกว่าหรือเท่ากับสูญเสียปัจจุบัน (targetLossPercent >= node.lossPct) จะไม่แสดงข้อมูล 2 ช่องสุดท้าย
+                            // เงื่อนไข: แสดงข้อมูลเป้าหมายเฉพาะเมื่อ %สูญเสียปัจจุบัน สูงกว่า %เป้าหมาย
                             const showTargetData = node.lossPct > targetLossPercent;
 
                             return (
