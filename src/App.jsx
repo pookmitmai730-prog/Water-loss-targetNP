@@ -1,973 +1,774 @@
 import React, { useState, useEffect } from 'react';
 import { db } from './firebaseConfig';
-import { collection, getDocs, addDoc, updateDoc, deleteDoc, doc } from 'firebase/firestore';
+import { collection, getDocs, doc, setDoc, addDoc, deleteDoc } from 'firebase/firestore';
 
-export default function StaffEvaluationApp() {
-  const [step, setStep] = useState('login'); // 'login' | 'evaluating' | 'success' | 'admin-login' | 'admin-dashboard'
-  const [activeAdminTab, setActiveAdminTab] = useState('reports'); // 'reports' | 'employees' | 'criteria'
-  
-  // พนักงาน & ล็อกอิน
-  const [inputEmpId, setInputEmpId] = useState('');
-  const [currentStaff, setCurrentStaff] = useState(null);
-  const [staffList, setStaffList] = useState([]);
-  const [criteriaList, setCriteriaList] = useState([]);
-  
-  // ผลประเมิน
-  const [scores, setScores] = useState({});
-  const [comment, setComment] = useState('');
-  const [errorMsg, setErrorMsg] = useState('');
+// --- Array สีสำหรับแจกจ่ายให้แต่ละ MM แตกต่างกัน ---
+const MM_COLORS = [
+  { bg: '#ebf8ff', border: '#3182ce', badge: '#2b6cb0' }, // ฟ้า
+  { bg: '#f0fdf4', border: '#16a34a', badge: '#15803d' }, // เขียว
+  { bg: '#fef3c7', border: '#d97706', badge: '#b45309' }, // เหลือง/ส้ม
+  { bg: '#fdf2f8', border: '#db2777', badge: '#be185d' }, // ชมพู
+  { bg: '#f5f3ff', border: '#7c3aed', badge: '#6d28d9' }, // ม่วง
+  { bg: '#ecfeff', border: '#0891b2', badge: '#0e7490' }, // ฟ้าคราม
+];
 
-  // Admin States
-  const [adminPin, setAdminPin] = useState('');
-  const [evaluationsList, setEvaluationsList] = useState([]);
+// --- Component ย่อยแสดงแผนผัง Tree ---
+function TreeNode({ node, allNodes, records, onDeleteNode, mmColorMap }) {
+  const children = allNodes.filter(n => n.parentId === node.id);
+  const rec = records[node.id] || { qin: 0, qmeter: 0 };
+  const qin = Number(rec.qin) || 0;
+  const qmeter = Number(rec.qmeter) || 0;
+  const lossVol = qin >= qmeter ? qin - qmeter : 0;
+  const lossPct = qin > 0 ? (lossVol / qin) * 100 : 0;
 
-  // Form States: เพิ่ม/แก้ไขพนักงาน
-  const [editingEmpDocId, setEditingEmpDocId] = useState(null);
-  const [newEmpId, setNewEmpId] = useState('');
-  const [newEmpName, setNewEmpName] = useState('');
-  const [newEmpPosition, setNewEmpPosition] = useState('');
-  const [newEmpPhoto, setNewEmpPhoto] = useState('');
-
-  // Form States: เพิ่ม/แก้ไขหัวข้อการประเมิน
-  const [editingCriteriaId, setEditingCriteriaId] = useState(null);
-  const [newCriteriaTitle, setNewCriteriaTitle] = useState('');
-
-  // Report Filter States
-  const [reportPeriod, setReportPeriod] = useState('daily'); // 'daily' | 'monthly' | 'yearly' | 'all'
-  const [selectedStaffFilter, setSelectedStaffFilter] = useState('all');
-
-  // โหลดข้อมูลเบื้องต้น
-  useEffect(() => {
-    fetchStaffs();
-    fetchCriteria();
-  }, []);
-
-  const fetchStaffs = async () => {
-    try {
-      const querySnapshot = await getDocs(collection(db, "employees"));
-      const list = querySnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-      setStaffList(list);
-    } catch (err) {
-      console.error("Error fetching employees:", err);
-    }
+  const getRootMmId = (currNode, nodesList) => {
+    if (!currNode.parentId) return currNode.type === 'MM' ? currNode.id : null;
+    const parent = nodesList.find(n => n.id === currNode.parentId);
+    if (!parent) return null;
+    return getRootMmId(parent, nodesList);
   };
 
-  const fetchCriteria = async () => {
-    try {
-      const querySnapshot = await getDocs(collection(db, "criteria"));
-      const list = querySnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-      list.sort((a, b) => (a.order || 0) - (b.order || 0));
-      setCriteriaList(list);
-    } catch (err) {
-      console.error("Error fetching criteria:", err);
-    }
-  };
-
-  const fetchEvaluations = async () => {
-    try {
-      const querySnapshot = await getDocs(collection(db, "evaluations"));
-      const list = querySnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-      setEvaluationsList(list);
-    } catch (err) {
-      console.error("Error fetching evaluations:", err);
-    }
-  };
-
-  // 1. เข้าสู่ระบบพนักงาน
-  const handleLogin = (e) => {
-    e.preventDefault();
-    setErrorMsg('');
-    const foundStaff = staffList.find(staff => 
-      String(staff.employeeId).trim() === String(inputEmpId).trim()
-    );
-    
-    if (foundStaff) {
-      setCurrentStaff(foundStaff);
-      setStep('evaluating');
-    } else {
-      setErrorMsg('ไม่พบรหัสพนักงานนี้ในระบบ กรุณาตรวจสอบอีกครั้ง');
-    }
-  };
-
-  // 2. ส่งผลการประเมิน
-  const handleSubmitScore = async (e) => {
-    e.preventDefault();
-    try {
-      await addDoc(collection(db, "evaluations"), {
-        employeeId: currentStaff.employeeId,
-        employeeName: currentStaff.name,
-        scores,
-        comment,
-        createdAt: new Date().toISOString()
-      });
-      setStep('success');
-      setTimeout(() => {
-        setStep('evaluating');
-        setScores({});
-        setComment('');
-      }, 2000);
-    } catch (error) {
-      console.error("Error submitting score: ", error);
-    }
-  };
-
-  // 3. เข้าสู่ระบบ Admin (PIN: 1234)
-  const handleAdminLogin = (e) => {
-    e.preventDefault();
-    if (adminPin === '1234') {
-      setStep('admin-dashboard');
-      fetchEvaluations();
-      setAdminPin('');
-      setErrorMsg('');
-    } else {
-      setErrorMsg('รหัส PIN Admin ไม่ถูกต้อง (รหัสเริ่มต้น: 1234)');
-    }
-  };
-
-  const handleImageChange = (e) => {
-    const file = e.target.files[0];
-    if (file) {
-      const reader = new FileReader();
-      reader.onloadend = () => {
-        setNewEmpPhoto(reader.result);
-      };
-      reader.readAsDataURL(file);
-    }
-  };
-
-  const handleSaveEmployee = async (e) => {
-    e.preventDefault();
-    if (!newEmpId || !newEmpName) return;
-
-    const empData = {
-      employeeId: isNaN(Number(newEmpId)) ? newEmpId : Number(newEmpId),
-      name: newEmpName,
-      position: newEmpPosition || "เจ้าหน้าที่บริการ",
-      photoUrl: newEmpPhoto || "https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=500&h=500&fit=crop&crop=faces"
-    };
-
-    try {
-      if (editingEmpDocId) {
-        await updateDoc(doc(db, "employees", editingEmpDocId), empData);
-      } else {
-        await addDoc(collection(db, "employees"), empData);
-      }
-      resetEmpForm();
-      fetchStaffs();
-    } catch (err) {
-      console.error("Error saving employee:", err);
-    }
-  };
-
-  const handleStartEditEmployee = (emp) => {
-    setEditingEmpDocId(emp.id);
-    setNewEmpId(emp.employeeId);
-    setNewEmpName(emp.name);
-    setNewEmpPosition(emp.position || '');
-    setNewEmpPhoto(emp.photoUrl || '');
-  };
-
-  const resetEmpForm = () => {
-    setEditingEmpDocId(null);
-    setNewEmpId('');
-    setNewEmpName('');
-    setNewEmpPosition('');
-    setNewEmpPhoto('');
-  };
-
-  const handleDeleteEmployee = async (id) => {
-    if (window.confirm("คุณต้องการลบข้อมูลพนักงานคนนี้ใช่หรือไม่?")) {
-      try {
-        await deleteDoc(doc(db, "employees", id));
-        if (editingEmpDocId === id) resetEmpForm();
-        fetchStaffs();
-      } catch (err) {
-        console.error("Error deleting employee:", err);
-      }
-    }
-  };
-
-  const handleSaveCriteria = async (e) => {
-    e.preventDefault();
-    if (!newCriteriaTitle.trim()) return;
-
-    try {
-      if (editingCriteriaId) {
-        await updateDoc(doc(db, "criteria", editingCriteriaId), {
-          title: newCriteriaTitle
-        });
-      } else {
-        await addDoc(collection(db, "criteria"), {
-          title: newCriteriaTitle,
-          active: true,
-          order: criteriaList.length + 1
-        });
-      }
-      resetCriteriaForm();
-      fetchCriteria();
-    } catch (err) {
-      console.error("Error saving criteria:", err);
-    }
-  };
-
-  const handleToggleCriteriaActive = async (crit) => {
-    const currentActiveState = crit.active !== false;
-    try {
-      await updateDoc(doc(db, "criteria", crit.id), {
-        active: !currentActiveState
-      });
-      fetchCriteria();
-    } catch (err) {
-      console.error("Error toggling criteria active state:", err);
-    }
-  };
-
-  const handleStartEditCriteria = (crit) => {
-    setEditingCriteriaId(crit.id);
-    setNewCriteriaTitle(crit.title);
-  };
-
-  const resetCriteriaForm = () => {
-    setEditingCriteriaId(null);
-    setNewCriteriaTitle('');
-  };
-
-  const handleDeleteCriteria = async (id) => {
-    if (window.confirm("คุณต้องการลบหัวข้อการประเมินนี้ใช่หรือไม่?")) {
-      try {
-        await deleteDoc(doc(db, "criteria", id));
-        if (editingCriteriaId === id) resetCriteriaForm();
-        fetchCriteria();
-      } catch (err) {
-        console.error("Error deleting criteria:", err);
-      }
-    }
-  };
-
-  const getFilteredEvaluations = () => {
-    const now = new Date();
-    return evaluationsList.filter(item => {
-      if (selectedStaffFilter !== 'all' && String(item.employeeId) !== String(selectedStaffFilter)) {
-        return false;
-      }
-      if (!item.createdAt) return true;
-      const itemDate = new Date(item.createdAt);
-      if (reportPeriod === 'daily') {
-        return itemDate.toDateString() === now.toDateString();
-      } else if (reportPeriod === 'monthly') {
-        return itemDate.getMonth() === now.getMonth() && itemDate.getFullYear() === now.getFullYear();
-      } else if (reportPeriod === 'yearly') {
-        return itemDate.getFullYear() === now.getFullYear();
-      }
-      return true;
-    });
-  };
-
-  const filteredData = getFilteredEvaluations();
-
-  const calculateReportStats = () => {
-    const totalEvals = filteredData.length;
-    
-    const criteriaStats = {};
-    criteriaList.forEach(crit => {
-      criteriaStats[crit.id] = {
-        title: crit.title,
-        scoresCount: { 1: 0, 2: 0, 3: 0, 4: 0 },
-        totalScoreSum: 0,
-        ratedCount: 0
-      };
-    });
-
-    const staffScoreMap = {};
-
-    filteredData.forEach(item => {
-      const empId = item.employeeId;
-      if (!staffScoreMap[empId]) {
-        staffScoreMap[empId] = { name: item.employeeName, totalScore: 0, count: 0, score1Count: 0, score4Count: 0 };
-      }
-
-      if (item.scores) {
-        Object.entries(item.scores).forEach(([critId, score]) => {
-          if (criteriaStats[critId]) {
-            if (score >= 1 && score <= 4) {
-              criteriaStats[critId].scoresCount[score] += 1;
-              criteriaStats[critId].totalScoreSum += score;
-              criteriaStats[critId].ratedCount += 1;
-            }
-          }
-          staffScoreMap[empId].totalScore += score;
-          staffScoreMap[empId].count += 1;
-          if (score === 1) staffScoreMap[empId].score1Count += 1;
-          if (score === 4) staffScoreMap[empId].score4Count += 1;
-        });
-      }
-    });
-
-    let topStaff = null;
-    let lowestStaff = null;
-    let maxAvg = -1;
-    let maxUnsatisfied = -1;
-
-    Object.entries(staffScoreMap).forEach(([empId, data]) => {
-      const avg = data.count > 0 ? data.totalScore / data.count : 0;
-      if (avg > maxAvg) {
-        maxAvg = avg;
-        topStaff = { ...data, empId, avg };
-      }
-      if (data.score1Count > maxUnsatisfied) {
-        maxUnsatisfied = data.score1Count;
-        lowestStaff = { ...data, empId, unsatisfiedCount: data.score1Count };
-      }
-    });
-
-    return { totalEvals, criteriaStats, topStaff, lowestStaff };
-  };
-
-  const reportStats = calculateReportStats();
-
-  const exportToExcel = () => {
-    let csvContent = "data:text/csv;charset=utf-8,\uFEFF";
-    csvContent += "วันที่-เวลา,รหัสพนักงาน,ชื่อพนักงาน,ข้อเสนอแนะ,คะแนนรวม\n";
-
-    filteredData.forEach(item => {
-      const dateStr = item.createdAt ? new Date(item.createdAt).toLocaleString('th-TH') : '-';
-      const totalScore = item.scores ? Object.values(item.scores).reduce((a, b) => a + b, 0) : 0;
-      const cleanComment = (item.comment || '').replace(/"/g, '""');
-      csvContent += `"${dateStr}","${item.employeeId}","${item.employeeName}","${cleanComment}",${totalScore}\n`;
-    });
-
-    const encodedUri = encodeURI(csvContent);
-    const link = document.createElement("a");
-    link.setAttribute("href", encodedUri);
-    link.setAttribute("download", `รายงานการประเมิน_${reportPeriod}_${new Date().toISOString().slice(0,10)}.csv`);
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-  };
-
-  const exportToPDF = () => {
-    const staffName = selectedStaffFilter === 'all' 
-      ? 'ภาพรวมพนักงานทุกคนรวมกัน' 
-      : staffList.find(s => String(s.employeeId) === String(selectedStaffFilter))?.name || selectedStaffFilter;
-
-    const printWindow = window.open('', '_blank', 'width=900,height=700');
-    
-    let criteriaSummaryHTML = '';
-    Object.values(reportStats.criteriaStats).forEach((stat, idx) => {
-      const rated = stat.ratedCount || 1;
-      const p1 = ((stat.scoresCount[1] / rated) * 100).toFixed(1);
-      const p2 = ((stat.scoresCount[2] / rated) * 100).toFixed(1);
-      const p3 = ((stat.scoresCount[3] / rated) * 100).toFixed(1);
-      const p4 = ((stat.scoresCount[4] / rated) * 100).toFixed(1);
-      const avg = (stat.totalScoreSum / rated).toFixed(2);
-
-      criteriaSummaryHTML += `
-        <div style="margin-bottom: 12px; border-bottom: 1px dashed #cbd5e1; padding-bottom: 8px;">
-          <b>${idx + 1}. ${stat.title}</b> (คะแนนเฉลี่ย: ${avg} / 4.00)<br/>
-          <span style="color: #dc2626;">😡 ไม่พอใจเลย: ${stat.scoresCount[1]} คน (${p1}%)</span> | 
-          <span style="color: #d97706;">😐 พอใจปานกลาง: ${stat.scoresCount[2]} คน (${p2}%)</span> | 
-          <span style="color: #2563eb;">😊 พอใจมาก: ${stat.scoresCount[3]} คน (${p3}%)</span> | 
-          <span style="color: #16a34a;">😍 พอใจมากที่สุด: ${stat.scoresCount[4]} คน (${p4}%)</span>
-        </div>
-      `;
-    });
-
-    printWindow.document.write(`
-      <html>
-        <head>
-          <title>รายงานสรุปผลการประเมิน - การประปา</title>
-          <style>
-            body { font-family: 'Sarabun', sans-serif; padding: 20px; color: #0f172a; }
-            h1 { font-size: 20px; margin-bottom: 5px; color: #0369a1; }
-            h2 { font-size: 16px; margin-top: 20px; color: #0284c7; }
-            p { font-size: 12px; color: #64748b; margin-bottom: 15px; }
-            .card { background: #f0fdf4; border: 1px solid #bbf7d0; padding: 10px; border-radius: 8px; margin-bottom: 10px; font-size: 12px; }
-          </style>
-        </head>
-        <body>
-          <h1>💧 รายงานสรุปผลการประเมินความพึงพอใจ (การประปา)</h1>
-          <p>ช่วงเวลา: <b>${reportPeriod.toUpperCase()}</b> | พนักงาน: <b>${staffName}</b> | ผู้ประเมินทั้งหมด: <b>${reportStats.totalEvals} ครั้ง</b></p>
-          
-          <h2>📊 สรุปผลคะแนนแต่ละหัวข้อ</h2>
-          ${criteriaSummaryHTML || '<p>ยังไม่มีข้อมูลหัวข้อประเมิน</p>'}
-
-          <h2>🏆 สรุปพนักงานดีเด่น & จุดที่ต้องปรับปรุง</h2>
-          <div class="card">
-            ⭐ <b>พนักงานที่ได้รับความพึงพอใจสูงสุด:</b> ${reportStats.topStaff ? `${reportStats.topStaff.name} (รหัส: ${reportStats.topStaff.empId}) - คะแนนเฉลี่ย ${reportStats.topStaff.avg.toFixed(2)}/4.0` : 'ไม่มีข้อมูล'}
-          </div>
-          <div class="card" style="background: #fef2f2; border-color: #fecaca;">
-            ⚠️ <b>พนักงานที่ถูกประเมินว่าไม่พอใจเลยมากที่สุด:</b> ${reportStats.lowestStaff && reportStats.lowestStaff.unsatisfiedCount > 0 ? `${reportStats.lowestStaff.name} (รหัส: ${reportStats.lowestStaff.empId}) - จำนวน ${reportStats.lowestStaff.unsatisfiedCount} ครั้ง` : 'ไม่มีข้อมูล'}
-          </div>
-
-          <script>
-            window.onload = function() { window.print(); }
-          </script>
-        </body>
-      </html>
-    `);
-    printWindow.document.close();
-  };
-
-  const emotionLevels = [
-    { score: 1, emoji: '😡', label: 'ไม่พอใจเลย', sizeClass: 'text-3xl sm:text-4xl md:text-5xl' },
-    { score: 2, emoji: '😐', label: 'พอใจปานกลาง', sizeClass: 'text-4xl sm:text-5xl md:text-6xl' },
-    { score: 3, emoji: '😊', label: 'พอใจมาก', sizeClass: 'text-5xl sm:text-6xl md:text-7xl' },
-    { score: 4, emoji: '😍', label: 'พอใจมากที่สุด', sizeClass: 'text-6xl sm:text-7xl md:text-8xl' }
-  ];
-
-  const visibleCriteriaList = criteriaList.filter(crit => crit.active !== false);
+  const rootMmId = getRootMmId(node, allNodes);
+  const theme = node.type === 'MM' 
+    ? (mmColorMap[node.id] || MM_COLORS[0]) 
+    : (rootMmId && mmColorMap[rootMmId] ? mmColorMap[rootMmId] : { bg: '#f7fafc', border: '#cbd5e0', badge: '#4a5568' });
 
   return (
-    <div className="min-h-screen bg-sky-50 flex items-center justify-center p-2 sm:p-4 md:p-8 font-sans">
-      
-      {/* 🔐 1. หน้าจอ Login พนักงาน */}
-      {step === 'login' && (
-        <div className="bg-white p-6 sm:p-10 rounded-3xl shadow-xl border border-sky-100 max-w-md w-full text-center relative">
-          <div className="w-16 h-16 sm:w-20 sm:h-20 bg-sky-500 rounded-3xl mx-auto flex items-center justify-center text-white text-3xl sm:text-4xl mb-4 shadow-md shadow-sky-200">
-            💧
-          </div>
-          <h2 className="text-2xl sm:text-3xl font-bold text-sky-900 mb-2">ระบบประเมินความพึงพอใจ</h2>
-          <p className="text-sm sm:text-base text-sky-600/70 mb-6">กรุณากรอกรหัสพนักงานเพื่อเริ่มรับการประเมิน</p>
-          
-          <form onSubmit={handleLogin} className="space-y-4">
-            <input 
-              type="text" 
-              placeholder="กรอกรหัสพนักงาน (เช่น 12348)" 
-              value={inputEmpId}
-              onChange={(e) => setInputEmpId(e.target.value)}
-              className="w-full px-4 py-3.5 rounded-2xl border border-sky-200 bg-sky-50/50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-sky-500 text-center text-lg sm:text-xl font-semibold tracking-wider text-sky-900 placeholder-sky-300"
-              required
-            />
-            {errorMsg && <p className="text-red-500 text-xs sm:text-sm font-medium">{errorMsg}</p>}
-            <button 
-              type="submit"
-              className="w-full bg-sky-600 text-white py-3.5 rounded-2xl font-semibold hover:bg-sky-700 transition shadow-lg shadow-sky-200 text-base sm:text-lg"
-            >
-              เข้าสู่หน้าประเมิน
-            </button>
-          </form>
+    <li style={{ margin: '8px 0', listStyleType: 'none' }}>
+      <div 
+        onDoubleClick={() => onDeleteNode(node)}
+        title="💡 ดับเบิลคลิกเพื่อลบโซนนี้"
+        style={{ 
+          display: 'inline-flex', 
+          alignItems: 'center', 
+          gap: '10px',
+          background: theme.bg,
+          border: `1.5px solid ${theme.border}`,
+          padding: '6px 12px',
+          borderRadius: '6px',
+          boxShadow: '0 1px 3px rgba(0,0,0,0.08)',
+          cursor: 'pointer',
+          userSelect: 'none'
+        }}
+      >
+        <span style={{ 
+          background: theme.badge, 
+          color: 'white', 
+          padding: '2px 6px', 
+          borderRadius: '4px', 
+          fontSize: '11px',
+          fontWeight: 'bold'
+        }}>
+          {node.type}
+        </span>
+        <strong style={{ color: '#2d3748' }}>{node.name}</strong>
+        <span style={{ fontSize: '13px', color: '#718096' }}>
+          (มาตร DMA: {qin.toLocaleString()} คิว | สูญเสีย: <strong style={{ color: '#c53030' }}>{lossPct.toFixed(1)}%</strong> / {lossVol.toLocaleString()} คิว)
+        </span>
+        <span style={{ fontSize: '11px', color: '#e53e3e', marginLeft: '5px' }}>[ดับเบิลคลิกเพื่อลบ ❌]</span>
+      </div>
 
-          <div className="mt-8 pt-4 border-t border-sky-100">
-            <button
-              onClick={() => { setStep('admin-login'); setErrorMsg(''); }}
-              className="text-xs sm:text-sm text-sky-600 hover:text-sky-800 font-medium transition"
-            >
-              ⚙️ เข้าสู่ระบบผู้ดูแลระบบ (Admin)
-            </button>
-          </div>
-        </div>
+      {children.length > 0 && (
+        <ul style={{ paddingLeft: '25px', borderLeft: `2px dashed ${theme.border}`, margin: '5px 0 0 10px' }}>
+          {children.map(child => (
+            <TreeNode key={child.id} node={child} allNodes={allNodes} records={records} onDeleteNode={onDeleteNode} mmColorMap={mmColorMap} />
+          ))}
+        </ul>
       )}
+    </li>
+  );
+}
 
-      {/* 🔒 2. หน้าจอ Login Admin */}
-      {step === 'admin-login' && (
-        <div className="bg-white p-6 sm:p-10 rounded-3xl shadow-xl border border-sky-100 max-w-md w-full text-center">
-          <div className="w-16 h-16 sm:w-20 sm:h-20 bg-sky-800 rounded-3xl mx-auto flex items-center justify-center text-white text-2xl sm:text-3xl mb-4 shadow-md">
-            🔒
-          </div>
-          <h2 className="text-2xl sm:text-3xl font-bold text-sky-900 mb-2">ผู้ดูแลระบบ (Admin)</h2>
-          <p className="text-sm sm:text-base text-sky-600/70 mb-6">กรุณากรอกรหัส PIN (ค่าเริ่มต้น: 1234)</p>
-          
-          <form onSubmit={handleAdminLogin} className="space-y-4">
-            <input 
-              type="password" 
-              placeholder="PIN Admin" 
-              value={adminPin}
-              onChange={(e) => setAdminPin(e.target.value)}
-              className="w-full px-4 py-3.5 rounded-2xl border border-sky-200 bg-sky-50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-sky-500 text-center text-lg sm:text-xl font-semibold tracking-widest text-sky-900"
-              required
-            />
-            {errorMsg && <p className="text-red-500 text-xs sm:text-sm font-medium">{errorMsg}</p>}
-            <button 
-              type="submit"
-              className="w-full bg-sky-800 text-white py-3.5 rounded-2xl font-semibold hover:bg-sky-900 transition shadow-lg text-base sm:text-lg"
-            >
-              เข้าสู่ระบบ Admin
-            </button>
-            <button 
-              type="button"
-              onClick={() => { setStep('login'); setErrorMsg(''); }}
-              className="w-full text-sky-600 py-2 text-sm sm:text-base hover:underline"
-            >
-              กลับหน้าหลัก
-            </button>
-          </form>
-        </div>
-      )}
+function WaterLossDashboard() {
+  const [activeTab, setActiveTab] = useState(1); 
+  const [selectedMonth, setSelectedMonth] = useState('2026-10');
+  const [nodes, setNodes] = useState([]); 
+  const [records, setRecords] = useState({}); 
+  const [targetLossPercent, setTargetLossPercent] = useState(48); 
+  const [selectedMmIds, setSelectedMmIds] = useState([]); 
 
-      {/* 📊 3. หน้าจอ Admin Dashboard หลัก */}
-      {step === 'admin-dashboard' && (
-        <div className="bg-white p-4 sm:p-8 rounded-3xl shadow-xl border border-sky-100 max-w-5xl w-full">
-          
-          <div className="flex flex-col md:flex-row justify-between md:items-center border-b border-sky-100 pb-4 mb-6 gap-4">
-            <div>
-              <h2 className="text-xl sm:text-2xl font-bold text-sky-900">แผงควบคุมผู้ดูแลระบบ</h2>
-              <p className="text-xs sm:text-sm text-sky-600">จัดการข้อมูลพนักงาน หัวข้อการประเมิน และรายงานสรุป</p>
-            </div>
-            
-            <div className="flex bg-sky-50 p-1.5 rounded-2xl border border-sky-100 space-x-1">
-              <button 
-                onClick={() => setActiveAdminTab('reports')}
-                className={`px-3 sm:px-4 py-2 rounded-xl text-xs sm:text-sm font-semibold transition ${activeAdminTab === 'reports' ? 'bg-sky-600 text-white shadow-sm' : 'text-sky-700 hover:bg-sky-100'}`}
-              >
-                📊 รายงานผล
-              </button>
-              <button 
-                onClick={() => setActiveAdminTab('employees')}
-                className={`px-3 sm:px-4 py-2 rounded-xl text-xs sm:text-sm font-semibold transition ${activeAdminTab === 'employees' ? 'bg-sky-600 text-white shadow-sm' : 'text-sky-700 hover:bg-sky-100'}`}
-              >
-                👥 พนักงาน
-              </button>
-              <button 
-                onClick={() => setActiveAdminTab('criteria')}
-                className={`px-3 sm:px-4 py-2 rounded-xl text-xs sm:text-sm font-semibold transition ${activeAdminTab === 'criteria' ? 'bg-sky-600 text-white shadow-sm' : 'text-sky-700 hover:bg-sky-100'}`}
-              >
-                📝 หัวข้อประเมิน
-              </button>
-              <button 
-                onClick={() => setStep('login')}
-                className="px-2.5 sm:px-3 py-2 rounded-xl text-xs sm:text-sm font-semibold text-red-500 hover:bg-red-50 transition"
-              >
-                ออก
-              </button>
-            </div>
-          </div>
+  const [customFormulas, setCustomFormulas] = useState([]);
+  const [targetNodeId, setTargetNodeId] = useState('');
+  const [sourceNodeIds, setSourceNodeIds] = useState([]);
 
-          {/* TAB 1: รายงานการประเมิน */}
-          {activeAdminTab === 'reports' && (
-            <div className="space-y-6">
-              <div className="bg-sky-50/60 p-4 rounded-2xl border border-sky-100 grid grid-cols-1 md:grid-cols-3 gap-4">
-                <div>
-                  <label className="block text-xs font-semibold text-sky-900 mb-1">ช่วงเวลาสั่งสรุปรายงาน</label>
-                  <select 
-                    value={reportPeriod} 
-                    onChange={(e) => setReportPeriod(e.target.value)}
-                    className="w-full p-2.5 rounded-xl border border-sky-200 text-xs sm:text-sm bg-white text-sky-900 focus:outline-none focus:ring-2 focus:ring-sky-500"
-                  >
-                    <option value="daily">📅 ประจำวัน (วันนี้)</option>
-                    <option value="monthly">📆 ประจำเดือน (เดือนนี้)</option>
-                    <option value="yearly">🗓️ ประจำปี (ปีนี้)</option>
-                    <option value="all">♾️ ทั้งหมด</option>
-                  </select>
-                </div>
+  const [newName, setNewName] = useState('');
+  const [newType, setNewType] = useState('DMA'); 
+  const [newParentId, setNewParentId] = useState('');
 
-                <div>
-                  <label className="block text-xs font-semibold text-sky-900 mb-1">เลือกพนักงาน</label>
-                  <select 
-                    value={selectedStaffFilter} 
-                    onChange={(e) => setSelectedStaffFilter(e.target.value)}
-                    className="w-full p-2.5 rounded-xl border border-sky-200 text-xs sm:text-sm bg-white text-sky-900 focus:outline-none focus:ring-2 focus:ring-sky-500"
-                  >
-                    <option value="all">👥 ภาพรวมพนักงานทุกคนรวมกัน</option>
-                    {staffList.map(s => (
-                      <option key={s.id} value={s.employeeId}>👤 {s.name} ({s.employeeId})</option>
-                    ))}
-                  </select>
-                </div>
+  const getDaysInSelectedMonth = (yearMonthStr) => {
+    if (!yearMonthStr) return 30;
+    const [year, month] = yearMonthStr.split('-').map(Number);
+    return new Date(year, month, 0).getDate();
+  };
 
-                <div className="flex items-end space-x-2">
-                  <button 
-                    onClick={exportToExcel}
-                    className="flex-1 bg-emerald-600 hover:bg-emerald-700 text-white text-xs sm:text-sm py-2.5 px-3 rounded-xl font-semibold transition shadow-md flex items-center justify-center gap-1"
-                  >
-                    📥 Export Excel
-                  </button>
-                  <button 
-                    onClick={exportToPDF}
-                    className="flex-1 bg-sky-700 hover:bg-sky-800 text-white text-xs sm:text-sm py-2.5 px-3 rounded-xl font-semibold transition shadow-md flex items-center justify-center gap-1"
-                  >
-                    🖨️ เปิดรายงาน PDF
-                  </button>
-                </div>
-              </div>
+  const daysInMonth = getDaysInSelectedMonth(selectedMonth);
 
-              {/* สรุปสถิติคะแนนแต่ละหัวข้อ */}
-              <div className="bg-white p-4 sm:p-6 rounded-2xl border border-sky-200 shadow-sm space-y-4">
-                <h3 className="text-xs sm:text-sm font-bold text-sky-900 border-b border-sky-100 pb-2">📊 สรุปผลการประเมินแยกตามหัวข้อ (คะแนนและเปอร์เซ็นต์)</h3>
-                
-                {Object.keys(reportStats.criteriaStats).length === 0 ? (
-                  <p className="text-xs text-slate-400 text-center py-4">ยังไม่มีข้อมูลหัวข้อการประเมิน</p>
+  const fetchData = async () => {
+    try {
+      const snap = await getDocs(collection(db, "network_nodes"));
+      const nodeList = snap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      setNodes(nodeList);
+
+      if (selectedMmIds.length === 0 && nodeList.length > 0) {
+        const mmNodes = nodeList.filter(n => n.type === 'MM');
+        setSelectedMmIds(mmNodes.map(n => n.id));
+      }
+
+      const recSnap = await getDocs(collection(db, "monthly_network_records"));
+      const recMap = {};
+      recSnap.docs.forEach(doc => {
+        const data = doc.data();
+        if (data.monthYear === selectedMonth) {
+          recMap[data.nodeId] = { qin: data.qin ?? '', qmeter: data.qmeter ?? '' };
+        }
+      });
+      setRecords(recMap);
+
+      const formulaSnap = await getDocs(collection(db, "dma_formulas"));
+      const formulaList = formulaSnap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      setCustomFormulas(formulaList);
+
+    } catch (error) {
+      console.error("Error fetching data: ", error);
+    }
+  };
+
+  useEffect(() => {
+    fetchData();
+  }, [selectedMonth]);
+
+  const handleAddNode = async (e) => {
+    e.preventDefault();
+    if (!newName) return;
+    if (newName.startsWith('P3')) {
+      alert('ข้อมูลขึ้นต้นด้วย P3 เป็นข้อมูลแรงดัน ไม่ต้องนำมาบันทึกน้ำสูญเสียครับ');
+      return;
+    }
+    try {
+      await addDoc(collection(db, "network_nodes"), {
+        name: newName, 
+        type: newType, 
+        parentId: newParentId || null 
+      });
+      setNewName('');
+      setNewParentId('');
+      fetchData();
+      alert('เพิ่มโซนและผูกโครงสร้างสำเร็จ!');
+    } catch (error) {
+      console.error("Error adding node: ", error);
+    }
+  };
+
+  const handleDeleteNodeAndChildren = async (targetNode) => {
+    const getAllDescendantIds = (parentId, allNodes) => {
+      let ids = [parentId];
+      const children = allNodes.filter(n => n.parentId === parentId);
+      for (let child of children) {
+        ids = ids.concat(getAllDescendantIds(child.id, allNodes));
+      }
+      return ids;
+    };
+
+    const idsToDelete = getAllDescendantIds(targetNode.id, nodes);
+    const confirmMsg = idsToDelete.length > 1 
+      ? `⚠️ คุณต้องการลบ "${targetNode.name}" และโซนลูกหลานในสังกัดรวมทั้งหมด ${idsToDelete.length} โซน ใช่หรือไม่?`
+      : `⚠️ คุณต้องการลบโซน "${targetNode.name}" ใช่หรือไม่?`;
+
+    if (!window.confirm(confirmMsg)) return;
+
+    try {
+      for (let id of idsToDelete) {
+        await deleteDoc(doc(db, "network_nodes", id));
+        const recSnap = await getDocs(collection(db, "monthly_network_records"));
+        for (let recordDoc of recSnap.docs) {
+          if (recordDoc.data().nodeId === id) {
+            await deleteDoc(doc(db, "monthly_network_records", recordDoc.id));
+          }
+        }
+      }
+      alert('🗑️ ลบข้อมูลเรียบร้อยแล้ว!');
+      fetchData();
+    } catch (error) {
+      console.error("Error deleting node: ", error);
+      alert('เกิดข้อผิดพลาดในการลบข้อมูล');
+    }
+  };
+
+  const handleInputChange = (nodeId, field, value) => {
+    setRecords(prev => ({
+      ...prev,
+      [nodeId]: {
+        ...prev[nodeId],
+        [field]: value
+      }
+    }));
+  };
+
+  const handleSave = async () => {
+    try {
+      for (let node of calculatedNodes) {
+        const docId = `${selectedMonth}_${node.id}`;
+        await setDoc(doc(db, "monthly_network_records", docId), {
+          monthYear: selectedMonth,
+          nodeId: node.id,
+          name: node.name,
+          type: node.type,
+          qin: Number(node.qin) || 0,
+          qmeter: Number(node.qmeter) || 0
+        }, { merge: true });
+      }
+      alert('บันทึกข้อมูลสำเร็จ!');
+      fetchData();
+    } catch (error) {
+      console.error("Error saving records: ", error);
+    }
+  };
+
+  const toggleMmSelection = (id) => {
+    setSelectedMmIds(prev => 
+      prev.includes(id) ? prev.filter(i => i !== id) : [...prev, id]
+    );
+  };
+
+  const handleAddFormula = async (e) => {
+    e.preventDefault();
+    if (!targetNodeId || sourceNodeIds.length === 0) {
+      alert('กรุณาเลือกโซนผลลัพธ์ (Target) และโซนองค์ประกอบอย่างน้อย 1 โซน');
+      return;
+    }
+    try {
+      await addDoc(collection(db, "dma_formulas"), {
+        targetDmaId: targetNodeId,
+        sourceDmaIds: sourceNodeIds
+      });
+      setTargetNodeId('');
+      setSourceNodeIds([]);
+      fetchData();
+      alert('บันทึกสูตรสำเร็จ!');
+    } catch (error) {
+      console.error("Error adding formula: ", error);
+    }
+  };
+
+  const handleDeleteFormula = async (formulaId) => {
+    if (!window.confirm("คุณต้องการลบสูตรคำนวณนี้ใช่หรือไม่?")) return;
+    try {
+      await deleteDoc(doc(db, "dma_formulas", formulaId));
+      fetchData();
+    } catch (error) {
+      console.error("Error deleting formula: ", error);
+    }
+  };
+
+  const toggleSourceNodeSelection = (id) => {
+    setSourceNodeIds(prev => 
+      prev.includes(id) ? prev.filter(i => i !== id) : [...prev, id]
+    );
+  };
+
+  const getCalculatedQin = (nodeId, allNodes, recs, visited = new Set()) => {
+    if (visited.has(nodeId)) return 0;
+    visited.add(nodeId);
+
+    const rec = recs[nodeId] || { qin: '' };
+    if (rec.qin !== '' && rec.qin !== null && rec.qin !== undefined && !isNaN(rec.qin)) {
+      return Number(rec.qin);
+    }
+
+    const formula = customFormulas.find(f => f.targetDmaId === nodeId);
+    if (formula && formula.sourceDmaIds.length > 0) {
+      return formula.sourceDmaIds.reduce((sum, srcId) => {
+        return sum + getCalculatedQin(srcId, allNodes, recs, visited);
+      }, 0);
+    }
+
+    const children = allNodes.filter(n => n.parentId === nodeId);
+    if (children.length === 0) return 0;
+
+    return children.reduce((sum, child) => {
+      return sum + getCalculatedQin(child.id, allNodes, recs, visited);
+    }, 0);
+  };
+
+  const getCalculatedQmeter = (nodeId, allNodes, recs, visited = new Set()) => {
+    if (visited.has(nodeId)) return 0;
+    visited.add(nodeId);
+
+    const rec = recs[nodeId] || { qmeter: '' };
+    if (rec.qmeter !== '' && rec.qmeter !== null && rec.qmeter !== undefined && !isNaN(rec.qmeter)) {
+      return Number(rec.qmeter);
+    }
+
+    const formula = customFormulas.find(f => f.targetDmaId === nodeId);
+    if (formula && formula.sourceDmaIds.length > 0) {
+      return formula.sourceDmaIds.reduce((sum, srcId) => {
+        return sum + getCalculatedQmeter(srcId, allNodes, recs, visited);
+      }, 0);
+    }
+
+    const children = allNodes.filter(n => n.parentId === nodeId);
+    if (children.length === 0) return 0;
+
+    return children.reduce((sum, child) => {
+      return sum + getCalculatedQmeter(child.id, allNodes, recs, visited);
+    }, 0);
+  };
+
+  const calculatedNodes = nodes.map(node => {
+    const qin = getCalculatedQin(node.id, nodes, records);
+    const qmeter = getCalculatedQmeter(node.id, nodes, records);
+    const lossVol = qin >= qmeter ? qin - qmeter : 0;
+    const lossPct = qin > 0 ? (lossVol / qin) * 100 : 0;
+    const isMmSelected = selectedMmIds.includes(node.id);
+
+    return { ...node, qin, qmeter, lossVol, lossPct, isMmSelected };
+  });
+
+  const systemMmNodes = calculatedNodes.filter(n => n.type === 'MM' && n.isMmSelected);
+  const totalQin = systemMmNodes.reduce((sum, n) => sum + n.qin, 0);
+  const totalQmeter = systemMmNodes.reduce((sum, n) => sum + n.qmeter, 0);
+  const totalLossVol = totalQin - totalQmeter;
+  const currentOverallLossPct = totalQin > 0 ? (totalLossVol / totalQin) * 100 : 0;
+
+  const targetTotalLossVol = (totalQin * targetLossPercent) / 100;
+  const totalNeedToReduce = totalLossVol - targetTotalLossVol;
+
+  const sortedNodes = [...calculatedNodes].sort((a, b) => b.lossVol - a.lossVol);
+
+  const nodesWithTargets = sortedNodes.map(node => {
+    let reduceTargetVol = 0;
+    if (totalLossVol > 0 && totalNeedToReduce > 0) {
+      const proportion = node.lossVol / totalLossVol;
+      reduceTargetVol = totalNeedToReduce * proportion;
+    }
+    const targetLossRemaining = node.lossVol - reduceTargetVol;
+    
+    const monthlyOptimalQin = targetLossPercent < 100 ? node.qmeter / (1 - targetLossPercent / 100) : node.qin;
+    const optimalQin = daysInMonth > 0 ? monthlyOptimalQin / daysInMonth : 0;
+
+    return { ...node, reduceTargetVol, targetLossRemaining, optimalQin };
+  });
+
+  const rootNodes = nodes.filter(n => !n.parentId);
+  const mmNodesList = nodes.filter(n => n.type === 'MM');
+
+  const mmColorMap = {};
+  mmNodesList.forEach((mm, index) => {
+    mmColorMap[mm.id] = MM_COLORS[index % MM_COLORS.length];
+  });
+
+  const selectedMmNames = systemMmNodes.map(mm => mm.name).join(' + ');
+
+  const tabStyle = (tabId) => ({
+    padding: '10px 20px',
+    cursor: 'pointer',
+    fontWeight: 'bold',
+    background: activeTab === tabId ? '#3182ce' : '#edf2f7',
+    color: activeTab === tabId ? 'white' : '#4a5568',
+    border: 'none',
+    borderTopLeftRadius: '6px',
+    borderTopRightRadius: '6px',
+    fontSize: '14px',
+    transition: '0.2s'
+  });
+
+  const formatNumWithComma = (val) => {
+    const num = Number(val) || 0;
+    if (Math.abs(num) >= 100) {
+      return num.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    }
+    return num.toFixed(2);
+  };
+
+  const getRootMmId = (currNode, nodesList) => {
+    if (!currNode.parentId) return currNode.type === 'MM' ? currNode.id : null;
+    const parent = nodesList.find(n => n.id === currNode.parentId);
+    if (!parent) return null;
+    return getRootMmId(parent, nodesList);
+  };
+
+  return (
+    <div style={{ padding: '25px', fontFamily: 'sans-serif', maxWidth: '1550px', margin: 'auto', background: '#fdfdfd' }}>
+      <h2 style={{ color: '#1a365d', borderBottom: '2px solid #e2e8f0', paddingBottom: '10px' }}>
+        🌊 แดชบอร์ดบริหารจัดการน้ำสูญเสีย (NRW Management Dashboard)
+      </h2>
+
+      {/* เลือกเดือน */}
+      <div style={{ margin: '15px 0', background: '#f8fafc', padding: '12px 15px', borderRadius: '8px', border: '1px solid #e2e8f0', display: 'inline-block' }}>
+        <label><strong>ประจำเดือน/ปี: </strong></label>
+        <input type="month" value={selectedMonth} onChange={(e) => setSelectedMonth(e.target.value)} style={{ padding: '5px', borderRadius: '4px', border: '1px solid #cbd5e0', marginLeft: '10px' }} />
+        <span style={{ marginLeft: '15px', fontSize: '13px', color: '#4a5568' }}>
+          (เดือนนี้มี <strong>{daysInMonth} วัน</strong>)
+        </span>
+      </div>
+
+      {/* --- แถบเมนูด้านบน (Tabs) --- */}
+      <div style={{ display: 'flex', gap: '5px', borderBottom: '2px solid #3182ce', marginTop: '15px' }}>
+        <button style={tabStyle(1)} onClick={() => setActiveTab(1)}>
+          ⚙️ 1. กำหนดสูตรคำนวณ (MM & DMA Formulas)
+        </button>
+        <button style={tabStyle(2)} onClick={() => setActiveTab(2)}>
+          🌳 2. แผนผังโครงสร้าง Tree
+        </button>
+        <button style={tabStyle(3)} onClick={() => setActiveTab(3)}>
+          📊 3. สรุปผลและตารางเร่งด่วน
+        </button>
+      </div>
+
+      {/* --- เนื้อหาในแต่ละแท็บ --- */}
+      <div style={{ background: 'white', padding: '20px', border: '1px solid #e2e8f0', borderTop: 'none', borderRadius: '0 0 8px 8px', minHeight: '400px' }}>
+        
+        {/* TAB 1 */}
+        {activeTab === 1 && (
+          <div>
+            <div style={{ background: '#fffaf0', padding: '15px 20px', borderRadius: '8px', border: '1px solid #feebc8', marginBottom: '25px' }}>
+              <h3 style={{ color: '#9c4221', marginTop: '0' }}>1. กำหนดสูตรคำนวณภาพรวมระบบ (เฉพาะสถานี MM)</h3>
+              <p style={{ color: '#718096', fontSize: '14px' }}>เลือกสถานีหลัก (MM) ที่ต้องการให้นำมารวมคำนวณอัตราน้ำสูญเสียและเป้าหมายของทั้งระบบ</p>
+              
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '12px', marginTop: '15px' }}>
+                {mmNodesList.length === 0 ? (
+                  <p style={{ color: '#e53e3e', fontSize: '14px' }}>ยังไม่มีสถานี MM ในระบบ กรุณาเพิ่มโซนประเภท MM ในแท็บแผนผัง Tree</p>
                 ) : (
-                  <div className="space-y-4">
-                    {Object.values(reportStats.criteriaStats).map((stat, idx) => {
-                      const rated = stat.ratedCount || 1;
-                      const p1 = ((stat.scoresCount[1] / rated) * 100).toFixed(1);
-                      const p2 = ((stat.scoresCount[2] / rated) * 100).toFixed(1);
-                      const p3 = ((stat.scoresCount[3] / rated) * 100).toFixed(1);
-                      const p4 = ((stat.scoresCount[4] / rated) * 100).toFixed(1);
-                      const avg = (stat.totalScoreSum / rated).toFixed(2);
+                  mmNodesList.map(mm => (
+                    <label key={mm.id} style={{ cursor: 'pointer', background: 'white', padding: '8px 12px', borderRadius: '6px', border: '1px solid #cbd5e0', fontSize: '14px', fontWeight: 'bold' }}>
+                      <input 
+                        type="checkbox" 
+                        checked={selectedMmIds.includes(mm.id)}
+                        onChange={() => toggleMmSelection(mm.id)}
+                        style={{ marginRight: '8px' }}
+                      />
+                      {mm.name}
+                    </label>
+                  ))
+                )}
+              </div>
+
+              <div style={{ marginTop: '15px', padding: '10px 15px', background: 'white', borderRadius: '6px', border: '1px solid #f6ad55', fontSize: '15px', color: '#7b341e', fontWeight: 'bold' }}>
+                📐 อัตราน้ำสูญเสียทั้งหมด = {selectedMmNames ? selectedMmNames : '(ยังไม่ได้เลือกสถานี MM)'}
+              </div>
+            </div>
+
+            <div style={{ background: '#f0fdf4', padding: '15px 20px', borderRadius: '8px', border: '1px solid #bbf7d0' }}>
+              <h3 style={{ color: '#166534', marginTop: '0' }}>2. กำหนดสูตรคำนวณระดับ MM หรือ DMA (Custom Formulas)</h3>
+              <p style={{ color: '#15803d', fontSize: '14px' }}>สร้างสูตรบวกผลรวมระหว่างโซน (รองรับทั้ง MM และ DMA)</p>
+
+              <form onSubmit={handleAddFormula} style={{ display: 'flex', flexWrap: 'wrap', gap: '15px', alignItems: 'center', marginTop: '15px', background: 'white', padding: '15px', borderRadius: '6px', border: '1px solid #d1fae5' }}>
+                <div>
+                  <label style={{ display: 'block', marginBottom: '5px', fontSize: '13px' }}><strong>โซนผลลัพธ์ (Target):</strong></label>
+                  <select value={targetNodeId} onChange={(e) => setTargetNodeId(e.target.value)} style={{ padding: '6px', borderRadius: '4px', border: '1px solid #cbd5e0' }}>
+                    <option value="">-- เลือกโซนปลายทาง --</option>
+                    {nodes.map(n => <option key={n.id} value={n.id}>[{n.type}] {n.name}</option>)}
+                  </select>
+                </div>
+
+                <div style={{ flex: 1, minWidth: '300px' }}>
+                  <label style={{ display: 'block', marginBottom: '5px', fontSize: '13px' }}><strong>เลือกโซนที่จะนำมารวมกัน (+):</strong></label>
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: '10px', maxHeight: '120px', overflowY: 'auto', padding: '5px', border: '1px solid #e2e8f0', borderRadius: '4px' }}>
+                    {nodes.filter(n => n.id !== targetNodeId).map(n => (
+                      <label key={n.id} style={{ fontSize: '13px', cursor: 'pointer', background: '#f8fafc', padding: '2px 6px', borderRadius: '4px', border: '1px solid #cbd5e0' }}>
+                        <input 
+                          type="checkbox" 
+                          checked={sourceNodeIds.includes(n.id)}
+                          onChange={() => toggleSourceNodeSelection(n.id)}
+                          style={{ marginRight: '4px' }}
+                        />
+                        [{n.type}] {n.name}
+                      </label>
+                    ))}
+                  </div>
+                </div>
+
+                <button type="submit" style={{ padding: '8px 15px', background: '#16a34a', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer', height: '38px', alignSelf: 'flex-end' }}>
+                  + เพิ่มสูตร
+                </button>
+              </form>
+
+              <div style={{ marginTop: '15px' }}>
+                <h4 style={{ color: '#166534', margin: '10px 0' }}>📋 รายการสูตรคำนวณปัจจุบัน:</h4>
+                {customFormulas.length === 0 ? (
+                  <p style={{ color: '#718096', fontSize: '13px' }}>ยังไม่มีสูตร Custom Formula ในระบบ</p>
+                ) : (
+                  <ul style={{ paddingLeft: '20px', margin: '0' }}>
+                    {customFormulas.map(formula => {
+                      const targetNode = nodes.find(n => n.id === formula.targetDmaId);
+                      const sourceNames = formula.sourceDmaIds.map(srcId => {
+                        const sNode = nodes.find(n => n.id === srcId);
+                        return sNode ? sNode.name : '';
+                      }).filter(Boolean).join(' + ');
 
                       return (
-                        <div key={idx} className="bg-sky-50/50 p-3.5 rounded-xl border border-sky-100 space-y-2">
-                          <div className="flex justify-between items-center text-xs sm:text-sm">
-                            <span className="font-bold text-sky-900">{idx + 1}. {stat.title}</span>
-                            <span className="bg-sky-200 text-sky-800 px-2 py-0.5 rounded-md font-bold">คะแนนเฉลี่ย: {avg} / 4.00</span>
-                          </div>
-                          <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-[11px] sm:text-xs">
-                            <div className="bg-white p-2 rounded-lg border border-red-100 text-red-700">
-                              😡 ไม่พอใจเลย: <b>{stat.scoresCount[1]} คน</b> ({p1}%)
-                            </div>
-                            <div className="bg-white p-2 rounded-lg border border-amber-100 text-amber-700">
-                              😐 พอใจปานกลาง: <b>{stat.scoresCount[2]} คน</b> ({p2}%)
-                            </div>
-                            <div className="bg-white p-2 rounded-lg border border-blue-100 text-blue-700">
-                              😊 พอใจมาก: <b>{stat.scoresCount[3]} คน</b> ({p3}%)
-                            </div>
-                            <div className="bg-white p-2 rounded-lg border border-emerald-100 text-emerald-700">
-                              😍 พอใจมากที่สุด: <b>{stat.scoresCount[4]} คน</b> ({p4}%)
-                            </div>
-                          </div>
-                        </div>
+                        <li key={formula.id} style={{ margin: '5px 0', fontSize: '14px' }}>
+                          <strong>{targetNode ? `[${targetNode.type}] ${targetNode.name}` : 'Unknown'}</strong> = {sourceNames} 
+                          <button 
+                            onClick={() => handleDeleteFormula(formula.id)}
+                            style={{ marginLeft: '10px', background: '#fee2e2', color: '#dc2626', border: 'none', padding: '2px 6px', borderRadius: '4px', cursor: 'pointer', fontSize: '12px' }}
+                          >
+                            ลบสูตร ❌
+                          </button>
+                        </li>
                       );
                     })}
-                  </div>
+                  </ul>
                 )}
               </div>
-
-              {/* สรุปพนักงานสูงสุดและต่ำสุด */}
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <div className="bg-emerald-50/70 p-4 rounded-2xl border border-emerald-200">
-                  <h4 className="text-xs sm:text-sm font-bold text-emerald-900 mb-1">⭐ พนักงานที่ได้รับความพอใจสูงสุด (ดีเยี่ยม)</h4>
-                  {reportStats.topStaff ? (
-                    <div className="text-xs sm:text-sm text-emerald-800 space-y-1">
-                      <p><b>ชื่อ:</b> {reportStats.topStaff.name} (รหัส: {reportStats.topStaff.empId})</p>
-                      <p><b>คะแนนเฉลี่ยรวม:</b> {reportStats.topStaff.avg.toFixed(2)} / 4.00 คะแนน</p>
-                    </div>
-                  ) : (
-                    <p className="text-xs text-slate-400">ยังไม่มีข้อมูลการประเมิน</p>
-                  )}
-                </div>
-
-                <div className="bg-red-50/70 p-4 rounded-2xl border border-red-200">
-                  <h4 className="text-xs sm:text-sm font-bold text-red-900 mb-1">⚠️ พนักงานที่ถูกประเมินไม่พอใจเลยมากที่สุด</h4>
-                  {reportStats.lowestStaff && reportStats.lowestStaff.unsatisfiedCount > 0 ? (
-                    <div className="text-xs sm:text-sm text-red-800 space-y-1">
-                      <p><b>ชื่อ:</b> {reportStats.lowestStaff.name} (รหัส: {reportStats.lowestStaff.empId})</p>
-                      <p><b>จำนวนครั้งที่ไม่พอใจ:</b> {reportStats.lowestStaff.unsatisfiedCount} ครั้ง</p>
-                    </div>
-                  ) : (
-                    <p className="text-xs text-slate-500">ยอดเยี่ยม! ไม่มีรายการไม่พอใจเลยในช่วงเวลานี้</p>
-                  )}
-                </div>
-              </div>
-
-              {/* ตารางแสดงรายละเอียดประวัติ */}
-              <div className="overflow-x-auto">
-                <h3 className="text-xs sm:text-sm font-bold text-sky-900 mb-2">📋 ประวัติการประเมินย้อนหลัง</h3>
-                <table className="w-full text-left text-xs sm:text-sm border-collapse">
-                  <thead>
-                    <tr className="bg-sky-100/70 text-sky-900 border-b border-sky-200">
-                      <th className="p-3 rounded-tl-xl">วันที่-เวลา</th>
-                      <th className="p-3">รหัส</th>
-                      <th className="p-3">ชื่อพนักงาน</th>
-                      <th className="p-3">ข้อเสนอแนะ</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-sky-100">
-                    {filteredData.length === 0 ? (
-                      <tr>
-                        <td colSpan="4" className="text-center p-8 text-sky-400">ไม่พบข้อมูลการประเมินตามเงื่อนไขที่เลือก</td>
-                      </tr>
-                    ) : (
-                      filteredData.map((item, idx) => (
-                        <tr key={item.id || idx} className="hover:bg-sky-50/50">
-                          <td className="p-3 text-sky-900">
-                            {item.createdAt ? new Date(item.createdAt).toLocaleString('th-TH') : '-'}
-                          </td>
-                          <td className="p-3 font-semibold text-sky-800">{item.employeeId}</td>
-                          <td className="p-3 font-medium text-sky-900">{item.employeeName}</td>
-                          <td className="p-3 text-slate-600 italic">{item.comment || '-'}</td>
-                        </tr>
-                      ))
-                    )}
-                  </tbody>
-                </table>
-              </div>
-
             </div>
-          )}
-
-          {/* TAB 2: จัดการพนักงาน */}
-          {activeAdminTab === 'employees' && (
-            <div className="space-y-6">
-              <form onSubmit={handleSaveEmployee} className={`p-4 rounded-2xl border transition ${editingEmpDocId ? 'bg-amber-50/70 border-amber-200' : 'bg-sky-50/60 border-sky-100'} space-y-3`}>
-                <div className="flex justify-between items-center mb-1">
-                  <h3 className={`text-xs sm:text-sm font-bold ${editingEmpDocId ? 'text-amber-900' : 'text-sky-900'}`}>
-                    {editingEmpDocId ? '✏️ แก้ไขข้อมูลพนักงาน' : '➕ เพิ่มข้อมูลพนักงานใหม่'}
-                  </h3>
-                  {editingEmpDocId && (
-                    <button 
-                      type="button" 
-                      onClick={resetEmpForm}
-                      className="text-xs text-slate-500 hover:text-slate-800 underline"
-                    >
-                      ยกเลิกการแก้ไข
-                    </button>
-                  )}
-                </div>
-
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                  <input 
-                    type="text" 
-                    placeholder="รหัสพนักงาน (เช่น 12349)"
-                    value={newEmpId}
-                    onChange={(e) => setNewEmpId(e.target.value)}
-                    className="p-2.5 rounded-xl border border-sky-200 text-xs sm:text-sm focus:outline-none focus:ring-2 focus:ring-sky-500 bg-white"
-                    required
-                  />
-                  <input 
-                    type="text" 
-                    placeholder="ชื่อ-นามสกุล"
-                    value={newEmpName}
-                    onChange={(e) => setNewEmpName(e.target.value)}
-                    className="p-2.5 rounded-xl border border-sky-200 text-xs sm:text-sm focus:outline-none focus:ring-2 focus:ring-sky-500 bg-white"
-                    required
-                  />
-                  <input 
-                    type="text" 
-                    placeholder="ตำแหน่ง (เช่น เจ้าหน้าที่บริการ)"
-                    value={newEmpPosition}
-                    onChange={(e) => setNewEmpPosition(e.target.value)}
-                    className="p-2.5 rounded-xl border border-sky-200 text-xs sm:text-sm focus:outline-none focus:ring-2 focus:ring-sky-500 bg-white"
-                  />
-                  
-                  <div className="flex flex-col space-y-1">
-                    <label className="text-[11px] text-sky-800 font-semibold">เลือกรูปภาพพนักงานจากเครื่อง:</label>
-                    <input 
-                      type="file" 
-                      accept="image/*"
-                      onChange={handleImageChange}
-                      className="p-1.5 rounded-xl border border-sky-200 text-xs bg-white text-sky-900 file:mr-2 file:py-1 file:px-3 file:rounded-lg file:border-0 file:text-xs file:font-semibold file:bg-sky-100 file:text-sky-700 hover:file:bg-sky-200"
-                    />
-                  </div>
-                </div>
-
-                {newEmpPhoto && (
-                  <div className="flex items-center space-x-3 pt-2">
-                    <span className="text-xs text-sky-800">รูปตัวอย่าง:</span>
-                    <img src={newEmpPhoto} alt="Preview" className="w-16 h-16 rounded-full object-cover border-2 border-sky-300 shadow-sm" />
-                  </div>
-                )}
-
-                <div className="flex gap-2">
-                  <button 
-                    type="submit"
-                    className={`flex-1 text-white py-2.5 rounded-xl font-semibold transition text-xs sm:text-sm shadow-md ${editingEmpDocId ? 'bg-amber-600 hover:bg-amber-700' : 'bg-sky-600 hover:bg-sky-700'}`}
-                  >
-                    {editingEmpDocId ? 'บันทึกการแก้ไข' : 'บันทึกข้อมูลพนักงาน'}
-                  </button>
-                </div>
-              </form>
-
-              <div className="space-y-3">
-                <h3 className="text-xs sm:text-sm font-bold text-sky-900">รายชื่อพนักงานทั้งหมด ({staffList.length} คน)</h3>
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                  {staffList.map(emp => (
-                    <div key={emp.id} className={`flex items-center justify-between p-3 bg-white border rounded-2xl shadow-2xs transition ${editingEmpDocId === emp.id ? 'border-amber-400 ring-2 ring-amber-100' : 'border-sky-100'}`}>
-                      <div className="flex items-center space-x-3">
-                        <img src={emp.photoUrl} alt={emp.name} className="w-14 h-14 rounded-full object-cover border-2 border-sky-100 shadow-xs" />
-                        <div>
-                          <p className="text-xs sm:text-sm font-bold text-sky-900">{emp.name}</p>
-                          <p className="text-[10px] sm:text-xs text-sky-600">รหัส: {emp.employeeId} | {emp.position}</p>
-                        </div>
-                      </div>
-                      <div className="flex space-x-1">
-                        <button 
-                          onClick={() => handleStartEditEmployee(emp)}
-                          className="text-amber-600 hover:text-amber-800 text-xs font-semibold px-2 py-1 rounded-lg hover:bg-amber-50 transition"
-                        >
-                          แก้ไข
-                        </button>
-                        <button 
-                          onClick={() => handleDeleteEmployee(emp.id)}
-                          className="text-red-500 hover:text-red-700 text-xs font-semibold px-2 py-1 rounded-lg hover:bg-red-50 transition"
-                        >
-                          ลบ
-                        </button>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            </div>
-          )}
-
-          {/* TAB 3: จัดการหัวข้อประเมิน */}
-          {activeAdminTab === 'criteria' && (
-            <div className="space-y-6">
-              <form onSubmit={handleSaveCriteria} className="space-y-2">
-                {editingCriteriaId && (
-                  <div className="flex justify-between items-center px-1">
-                    <span className="text-xs font-semibold text-amber-800">✏️ กำลังแก้ไขหัวข้อการประเมิน</span>
-                    <button 
-                      type="button" 
-                      onClick={resetCriteriaForm}
-                      className="text-xs text-slate-500 hover:text-slate-800 underline"
-                    >
-                      ยกเลิก
-                    </button>
-                  </div>
-                )}
-                <div className="flex gap-2">
-                  <input 
-                    type="text"
-                    placeholder="ชื่อหัวข้อการประเมินใหม่..."
-                    value={newCriteriaTitle}
-                    onChange={(e) => setNewCriteriaTitle(e.target.value)}
-                    className="flex-1 px-4 py-2.5 rounded-xl border border-sky-200 text-xs sm:text-sm focus:outline-none focus:ring-2 focus:ring-sky-500"
-                    required
-                  />
-                  <button 
-                    type="submit"
-                    className={`text-white px-5 py-2.5 rounded-xl font-semibold transition text-xs sm:text-sm shadow-md ${editingCriteriaId ? 'bg-amber-600 hover:bg-amber-700' : 'bg-sky-600 hover:bg-sky-700'}`}
-                  >
-                    {editingCriteriaId ? 'บันทึก' : 'เพิ่มหัวข้อ'}
-                  </button>
-                </div>
-              </form>
-
-              <div className="space-y-2">
-                {criteriaList.map((crit, index) => {
-                  const isVisible = crit.active !== false;
-                  return (
-                    <div key={crit.id} className={`flex justify-between items-center border p-3.5 rounded-2xl transition ${editingCriteriaId === crit.id ? 'bg-amber-50/80 border-amber-300' : isVisible ? 'bg-sky-50/60 border-sky-100' : 'bg-slate-100 border-slate-200 opacity-60'}`}>
-                      <div className="flex items-center space-x-2">
-                        <span className="text-xs sm:text-sm font-semibold text-sky-900">{index + 1}. {crit.title}</span>
-                        {!isVisible && <span className="text-[10px] bg-slate-200 text-slate-600 px-2 py-0.5 rounded-full font-medium">(ซ่อนอยู่)</span>}
-                      </div>
-                      
-                      <div className="flex space-x-1">
-                        <button 
-                          type="button"
-                          onClick={() => handleToggleCriteriaActive(crit)}
-                          className={`text-xs font-semibold px-2.5 py-1 rounded-lg transition ${isVisible ? 'bg-emerald-100 text-emerald-700 hover:bg-emerald-200' : 'bg-slate-200 text-slate-700 hover:bg-slate-300'}`}
-                        >
-                          {isVisible ? '👁️ แสดง' : '🙈 ซ่อน'}
-                        </button>
-                        <button 
-                          onClick={() => handleStartEditCriteria(crit)}
-                          className="text-amber-600 hover:text-amber-800 text-xs font-semibold px-2.5 py-1 rounded-lg hover:bg-amber-50 transition"
-                        >
-                          แก้ไข
-                        </button>
-                        <button 
-                          onClick={() => handleDeleteCriteria(crit.id)}
-                          className="text-red-500 hover:text-red-700 text-xs font-semibold px-2.5 py-1 rounded-lg hover:bg-red-50 transition"
-                        >
-                          ลบ
-                        </button>
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-          )}
-
-        </div>
-      )}
-
-      {/* ⭐ 4. หน้าจอประเมินความพึงพอใจสำหรับลูกค้า (ปรับไอคอนให้ขยายเด่นชัด) */}
-      {step === 'evaluating' && currentStaff && (
-        <div className="bg-white p-4 sm:p-8 md:p-10 rounded-3xl shadow-xl border border-sky-100 w-full max-w-4xl md:max-w-5xl my-auto">
-          <div className="flex flex-col items-center border-b border-sky-100 pb-6 mb-8 relative">
-            <button
-              type="button"
-              onClick={() => {
-                setStep('login');
-                setInputEmpId('');
-                setCurrentStaff(null);
-                setScores({});
-                setComment('');
-              }}
-              className="absolute top-0 right-0 text-xs sm:text-sm text-sky-600 hover:text-red-500 border border-sky-200 bg-sky-50 px-3 py-1.5 rounded-xl transition font-semibold"
-            >
-              ออกจากระบบ
-            </button>
-
-            {/* รูปโปรไฟล์พนักงาน */}
-            <div className="relative mb-4">
-              <img 
-                src={currentStaff.photoUrl} 
-                alt={currentStaff.name} 
-                className="w-48 h-48 sm:w-56 sm:h-56 md:w-64 md:h-64 rounded-full object-cover shadow-2xl border-4 border-sky-300 p-1.5 bg-white"
-              />
-              <div className="absolute bottom-2 right-3 bg-sky-500 text-white p-2.5 rounded-full shadow-lg text-lg">
-                💧
-              </div>
-            </div>
-
-            <h2 className="text-2xl sm:text-3xl md:text-4xl font-bold text-sky-900 text-center">{currentStaff.name}</h2>
-            <p className="text-base sm:text-lg text-sky-600 font-semibold mt-1 text-center">{currentStaff.position}</p>
           </div>
+        )}
 
-          <form onSubmit={handleSubmitScore} className="space-y-8">
-            {visibleCriteriaList.length === 0 ? (
-              <p className="text-center text-slate-400 py-8 text-base">ไม่มีหัวข้อการประเมินในขณะนี้</p>
+        {/* TAB 2: แผนผังโครงสร้าง Tree */}
+        {activeTab === 2 && (
+          <div>
+            <h3 style={{ color: '#2d3748', marginTop: '0' }}>🌳 แผนผังโครงสร้างการจ่ายน้ำ (แยกสีตามสถานี MM)</h3>
+            <p style={{ fontSize: '13px', color: '#e53e3e', margin: '0 0 15px 0' }}>
+              💡 <em>คำแนะนำ: ดับเบิลคลิกที่ชื่อโซนในแผนผังเพื่อลบ (หากลบ MM หรือแม่ จะทำการลบลูกหลานทั้งหมดในสังกัดออกด้วยอัตโนมัติ)</em>
+            </p>
+
+            <form onSubmit={handleAddNode} style={{ display: 'flex', flexWrap: 'wrap', gap: '15px', alignItems: 'flex-end', background: '#f8fafc', padding: '15px', borderRadius: '8px', border: '1px solid #e2e8f0', marginBottom: '20px' }}>
+              <div>
+                <label style={{ display: 'block', marginBottom: '5px' }}><strong>ชื่อโซน (MM / DMA):</strong></label>
+                <input type="text" placeholder="เช่น MM-01 หรือ DMA-04" value={newName} onChange={(e) => setNewName(e.target.value)} style={{ padding: '6px', borderRadius: '4px', border: '1px solid #cbd5e0' }} />
+              </div>
+              <div>
+                <label style={{ display: 'block', marginBottom: '5px' }}><strong>ประเภท:</strong></label>
+                <select value={newType} onChange={(e) => setNewType(e.target.value)} style={{ padding: '6px', borderRadius: '4px', border: '1px solid #cbd5e0' }}>
+                  <option value="MM">MM (สถานีหลัก)</option>
+                  <option value="DMA">DMA (พื้นที่ย่อย)</option>
+                </select>
+              </div>
+              <div>
+                <label style={{ display: 'block', marginBottom: '5px' }}><strong>เชื่อมโยงสังกัดแม่ (Parent):</strong></label>
+                <select value={newParentId} onChange={(e) => setNewParentId(e.target.value)} style={{ padding: '6px', borderRadius: '4px', border: '1px solid #cbd5e0' }}>
+                  <option value="">-- เป็นแม่สูงสุด (Top Level / MM) --</option>
+                  {nodes.map(n => <option key={n.id} value={n.id}>[{n.type}] {n.name}</option>)}
+                </select>
+              </div>
+              <button type="submit" style={{ padding: '8px 15px', background: '#3182ce', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer', height: '35px' }}>
+                + เพิ่มโซนและผูกโครงสร้าง
+              </button>
+            </form>
+
+            {nodes.length === 0 ? (
+              <p style={{ color: '#718096' }}>ยังไม่มีข้อมูลโครงสร้างโซน กรุณาเพิ่มข้อมูลด้านบน</p>
             ) : (
-              visibleCriteriaList.map((crit, index) => (
-                <div key={crit.id} className="bg-sky-50/70 border border-sky-100 p-5 sm:p-6 rounded-3xl shadow-xs">
-                  <p className="font-bold text-sky-900 mb-4 text-center text-lg sm:text-xl md:text-2xl">{index + 1}. {crit.title}</p>
-                  
-                  {/* ปุ่มไอคอนประเมิน ปรับให้ขยายใหญ่โดดเด่นทั้งเวลากดเลือก (Selected) และชี้นำ (Hover) */}
-                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 sm:gap-4 py-4">
-                    {emotionLevels.map((item) => {
-                      const isSelected = scores[crit.id] === item.score;
-                      return (
-                        <button
-                          type="button"
-                          key={item.score}
-                          onClick={() => setScores({ ...scores, [crit.id]: item.score })}
-                          className={`flex flex-col items-center justify-center p-4 sm:p-6 rounded-2xl sm:rounded-3xl cursor-pointer transition-all duration-300 transform ${
-                            isSelected 
-                              ? 'bg-sky-200 scale-125 md:scale-130 shadow-2xl border-2 sm:border-4 border-sky-500 ring-4 ring-sky-300/80 -translate-y-2 z-10' 
-                              : 'bg-white hover:bg-sky-100/80 opacity-60 hover:opacity-100 border border-sky-100 hover:scale-115 hover:-translate-y-1'
-                          }`}
-                        >
-                          <span className={`${item.sizeClass} mb-2 transition-transform duration-300 drop-shadow-sm`}>
-                            {item.emoji}
-                          </span>
-                          <span className={`text-xs sm:text-sm md:text-base font-bold text-center transition-colors ${
-                            isSelected ? 'text-sky-950 font-extrabold' : 'text-sky-800'
-                          }`}>
-                            {item.label}
-                          </span>
-                        </button>
-                      );
-                    })}
+              <ul style={{ paddingLeft: '0', margin: '0' }}>
+                {rootNodes.map(root => (
+                  <TreeNode key={root.id} node={root} allNodes={nodes} records={records} onDeleteNode={handleDeleteNodeAndChildren} mmColorMap={mmColorMap} />
+                ))}
+              </ul>
+            )}
+          </div>
+        )}
+
+        {/* TAB 3: สรุปผลภาพรวมระบบ และตารางรายงานแยกตาม MM */}
+        {activeTab === 3 && (
+          <div>
+            <div style={{ background: 'linear-gradient(135deg, #ebf8ff 0%, #eef2f7 100%)', padding: '20px 25px', borderRadius: '12px', border: '1px solid #bee3f8', marginBottom: '25px', boxShadow: '0 4px 6px rgba(0,0,0,0.02)' }}>
+              <h3 style={{ margin: '0 0 12px 0', color: '#1e3a8a', fontSize: '18px' }}>📊 สรุปผลการดำเนินงานภาพรวมระบบประจำเดือน {selectedMonth}</h3>
+              <p style={{ fontSize: '13px', color: '#4a5568', fontStyle: 'italic', marginBottom: '10px' }}>
+                สูตรคำนวณ: อัตราน้ำสูญเสียทั้งหมด = {selectedMmNames ? selectedMmNames : 'ไม่มีการเลือก MM'}
+              </p>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '15px', margin: '12px 0' }}>
+                <div style={{ background: 'white', padding: '12px 15px', borderRadius: '8px', border: '1px solid #e2e8f0' }}>
+                  <span style={{ fontSize: '12px', color: '#718096' }}>น้ำจ่ายต้นทางรวม (มาตร DMA)</span>
+                  <div style={{ fontSize: '18px', fontWeight: 'bold', color: '#2b6cb0' }}>{totalQin.toLocaleString()} คิว</div>
+                </div>
+                <div style={{ background: 'white', padding: '12px 15px', borderRadius: '8px', border: '1px solid #e2e8f0' }}>
+                  <span style={{ fontSize: '12px', color: '#718096' }}>น้ำจำหน่ายรวม</span>
+                  <div style={{ fontSize: '18px', fontWeight: 'bold', color: '#2f855a' }}>{totalQmeter.toLocaleString()} คิว</div>
+                </div>
+                <div style={{ background: 'white', padding: '12px 15px', borderRadius: '8px', border: '1px solid #e2e8f0' }}>
+                  <span style={{ fontSize: '12px', color: '#718096' }}>อัตราน้ำสูญเสียปัจจุบัน</span>
+                  <div style={{ fontSize: '18px', fontWeight: 'bold', color: currentOverallLossPct > targetLossPercent ? '#e53e3e' : '#38a169' }}>
+                    {currentOverallLossPct.toFixed(2)}% ({totalLossVol.toLocaleString()} คิว)
                   </div>
                 </div>
-              ))
+              </div>
+
+              <div style={{ margin: '15px 0 10px 0', display: 'flex', alignItems: 'center', gap: '12px', background: 'white', padding: '10px 15px', borderRadius: '8px', border: '1px solid #e2e8f0', display: 'inline-flex' }}>
+                <label style={{ fontSize: '14px', color: '#2d3748' }}><strong>เป้าหมายน้ำสูญเสียภาพรวมที่ต้องการ (%):</strong></label>
+                <input 
+                  type="number" 
+                  value={targetLossPercent} 
+                  onChange={(e) => setTargetLossPercent(Number(e.target.value))}
+                  style={{ width: '70px', padding: '6px', borderRadius: '6px', border: '1px solid #cbd5e0', textAlign: 'center', fontWeight: 'bold' }}
+                />
+              </div>
+              <div style={{ color: '#c53030', fontWeight: 'bold', fontSize: '15px', marginTop: '8px' }}>
+                🎯 ปริมาณน้ำสูญเสียที่ต้องลดลงเพิ่มทั้งระบบ: {totalNeedToReduce > 0 ? formatNumWithComma(totalNeedToReduce) : '0.00'} คิว
+              </div>
+            </div>
+
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
+              <h3 style={{ color: '#1e293b', margin: '0', fontSize: '17px' }}>📋 ตารางรายงานและจัดลำดับพื้นที่เร่งด่วน (แยกตามสถานี MM)</h3>
+              <div style={{ display: 'flex', gap: '10px', fontSize: '12px' }}>
+                <span style={{ display: 'flex', alignItems: 'center', gap: '4px', background: '#fef2f2', border: '1px solid #fecaca', padding: '4px 10px', borderRadius: '6px', fontWeight: 'bold', color: '#991b1b' }}>
+                  🔴 อันดับ 1 (สูญเสียสูงสุด)
+                </span>
+                <span style={{ display: 'flex', alignItems: 'center', gap: '4px', background: '#fffbeb', border: '1px solid #fde68a', padding: '4px 10px', borderRadius: '6px', fontWeight: 'bold', color: '#92400e' }}>
+                  🟠 อันดับ 2 (สูญเสียสูง)
+                </span>
+                <span style={{ display: 'flex', alignItems: 'center', gap: '10px', background: '#f8fafc', border: '1px solid #e2e8f0', padding: '4px 10px', borderRadius: '6px', color: '#475569' }}>
+                  ⚪ ปกติ
+                </span>
+              </div>
+            </div>
+
+            {mmNodesList.length === 0 ? (
+              <p style={{ color: '#718096' }}>ยังไม่มีสถานี MM ในระบบ กรุณาเพิ่มข้อมูลในแท็บแผนผัง Tree</p>
+            ) : (
+              mmNodesList.map((mmNode) => {
+                const mmTheme = mmColorMap[mmNode.id] || MM_COLORS[0];
+                
+                const mmGroupNodes = nodesWithTargets.filter(n => {
+                  const rootId = getRootMmId(n, nodes);
+                  return n.id === mmNode.id || rootId === mmNode.id;
+                });
+
+                if (mmGroupNodes.length === 0) return null;
+
+                // 📌 เปลี่ยนการเรียงลำดับใหม่: เรียงตามเปอร์เซ็นต์น้ำสูญเสีย (lossPct) จากมากไปน้อยในแต่ละ MM
+                const sortedMmGroupNodes = [...mmGroupNodes].sort((a, b) => b.lossPct - a.lossPct);
+
+                return (
+                  <div key={mmNode.id} style={{ marginBottom: '35px', border: `1px solid #e2e8f0`, borderRadius: '12px', overflow: 'hidden', boxShadow: '0 4px 6px -1px rgba(0,0,0,0.05), 0 2px 4px -1px rgba(0,0,0,0.03)', background: 'white' }}>
+                    {/* หัวข้อสถานี MM */}
+                    <div style={{ background: mmTheme.bg, padding: '14px 20px', borderBottom: `1px solid ${mmTheme.border}`, display: 'flex', alignItems: 'center', gap: '10px' }}>
+                      <span style={{ background: mmTheme.badge, color: 'white', padding: '4px 10px', borderRadius: '6px', fontSize: '12px', fontWeight: 'bold', letterSpacing: '0.5px' }}>
+                        MM STATION
+                      </span>
+                      <h4 style={{ margin: '0', color: '#0f172a', fontSize: '16px', fontWeight: '700' }}>{mmNode.name}</h4>
+                    </div>
+
+                    <div style={{ overflowX: 'auto' }}>
+                      <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'center', background: 'white', fontSize: '14px' }}>
+                        <thead>
+                          <tr style={{ background: '#f8fafc', color: '#475569', borderBottom: '2px solid #e2e8f0', fontSize: '13px' }}>
+                            <th style={{ padding: '12px 10px', fontWeight: '600' }}>ลำดับ</th>
+                            <th style={{ padding: '12px 10px', fontWeight: '600' }}>ประเภท</th>
+                            <th style={{ padding: '12px 10px', textAlign: 'left', fontWeight: '600' }}>ชื่อโซน</th>
+                            <th style={{ padding: '12px 10px', fontWeight: '600' }}>มาตร DMA (คิว)</th>
+                            <th style={{ padding: '12px 10px', fontWeight: '600' }}>น้ำจำหน่าย (คิว)</th>
+                            <th style={{ padding: '12px 10px', fontWeight: '600' }}>สูญเสียปัจจุบัน (คิว)</th>
+                            <th style={{ padding: '12px 10px', fontWeight: '600' }}>สูญเสียปัจจุบัน (%)</th>
+                            <th style={{ padding: '12px 10px', fontWeight: '600' }}>เป้าหมายภาพรวม (%)</th>
+                            <th style={{ padding: '12px 10px', fontWeight: '600' }}>สถานะเทียบเป้า</th>
+                            <th style={{ padding: '12px 10px', fontWeight: '600' }}>เป้าหมายต้องลดลงต่อเดือน (คิว)</th>
+                            <th style={{ padding: '12px 10px', background: '#eff6ff', color: '#1e40af', fontWeight: '700' }}>น้ำจ่ายรายวันที่เหมาะสม (คิว/วัน)</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {sortedMmGroupNodes.map((node, index) => {
+                            const rec = records[node.id] || { qin: '', qmeter: '' };
+                            const isOverTarget = node.lossPct > targetLossPercent;
+
+                            const displayQin = rec.qin !== '' && rec.qin !== undefined ? rec.qin : node.qin;
+                            const displayQmeter = rec.qmeter !== '' && rec.qmeter !== undefined ? rec.qmeter : node.qmeter;
+
+                            // กำหนดไฮไลต์สีตามอันดับความเร่งด่วน (% สูญเสียสูงสุดในกลุ่ม)
+                            let rowBgColor = index % 2 === 0 ? '#ffffff' : '#f8fafc';
+                            let rowBorderLeft = 'none';
+
+                            if (index === 0) {
+                              rowBgColor = '#fef2f2'; // แดงอ่อน (อันดับ 1)
+                              rowBorderLeft = '4px solid #ef4444';
+                            } else if (index === 1 && sortedMmGroupNodes.length > 2) {
+                              rowBgColor = '#fffbeb'; // ส้มอ่อน (อันดับ 2)
+                              rowBorderLeft = '4px solid #f59e0b';
+                            }
+
+                            return (
+                              <tr key={node.id} style={{ background: rowBgColor, borderLeft: rowBorderLeft, borderBottom: '1px solid #f1f5f9', transition: 'background 0.2s' }}>
+                                <td style={{ padding: '12px 10px' }}>
+                                  <strong>{index === 0 ? '🔴 #' + (index + 1) : `#${index + 1}`}</strong>
+                                </td>
+                                <td style={{ padding: '12px 10px' }}>
+                                  <span style={{ padding: '4px 8px', borderRadius: '6px', background: node.type === 'MM' ? '#3b82f6' : '#cbd5e1', color: node.type === 'MM' ? 'white' : '#334155', fontSize: '11px', fontWeight: 'bold' }}>
+                                    {node.type}
+                                  </span>
+                                </td>
+                                <td style={{ padding: '12px 10px', textAlign: 'left', fontWeight: '600', color: '#1e293b' }}>{node.name}</td>
+                                <td style={{ padding: '12px 10px' }}>
+                                  <input 
+                                    type="number" 
+                                    value={displayQin} 
+                                    onChange={(e) => handleInputChange(node.id, 'qin', e.target.value)}
+                                    style={{ 
+                                      width: '100px', 
+                                      padding: '7px 10px', 
+                                      textAlign: 'right', 
+                                      borderRadius: '6px', 
+                                      border: '1px solid #cbd5e0', 
+                                      background: rec.qin !== '' ? '#fff' : '#f0fff4',
+                                      fontSize: '14px',
+                                      outline: 'none'
+                                    }}
+                                  />
+                                </td>
+                                <td style={{ padding: '12px 10px' }}>
+                                  <input 
+                                    type="number" 
+                                    value={displayQmeter} 
+                                    onChange={(e) => handleInputChange(node.id, 'qmeter', e.target.value)}
+                                    style={{ 
+                                      width: '100px', 
+                                      padding: '7px 10px', 
+                                      textAlign: 'right', 
+                                      borderRadius: '6px', 
+                                      border: '1px solid #cbd5e0', 
+                                      background: rec.qmeter !== '' ? '#fff' : '#f0fff4',
+                                      fontSize: '14px',
+                                      outline: 'none'
+                                    }}
+                                  />
+                                </td>
+                                <td style={{ padding: '12px 10px', fontWeight: 'bold', color: '#dc2626' }}>{node.lossVol.toLocaleString()}</td>
+                                <td style={{ padding: '12px 10px' }}>
+                                  <span style={{ padding: '3px 8px', borderRadius: '6px', background: node.lossPct > targetLossPercent ? '#fee2e2' : '#dcfce7', color: node.lossPct > targetLossPercent ? '#991b1b' : '#166534', fontWeight: 'bold' }}>
+                                    {node.lossPct.toFixed(2)}%
+                                  </span>
+                                </td>
+                                <td style={{ padding: '12px 10px', color: '#64748b' }}>{targetLossPercent}%</td>
+                                <td style={{ padding: '12px 10px' }}>
+                                  <span style={{ 
+                                    padding: '5px 10px', 
+                                    borderRadius: '6px', 
+                                    fontSize: '12px', 
+                                    fontWeight: 'bold',
+                                    background: isOverTarget ? '#fee2e2' : '#dcfce7',
+                                    color: isOverTarget ? '#991b1b' : '#166534'
+                                  }}>
+                                    {isOverTarget ? '⚠️ สูงกว่าเป้า' : '✅ ผ่านเกณฑ์'}
+                                  </span>
+                                </td>
+                                <td style={{ padding: '12px 10px', color: '#2563eb', fontWeight: 'bold' }}>
+                                  {formatNumWithComma(node.reduceTargetVol)} คิว
+                                </td>
+                                <td style={{ padding: '12px 10px', background: '#f0f9ff', color: '#0369a1', fontWeight: 'bold' }}>
+                                  {formatNumWithComma(node.optimalQin)} คิว/วัน
+                                </td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                );
+              })
             )}
 
-            <div>
-              <textarea 
-                placeholder="ข้อเสนอแนะเพิ่มเติม (ถ้ามี)..."
-                value={comment}
-                onChange={(e) => setComment(e.target.value)}
-                className="w-full p-4 rounded-2xl border border-sky-200 bg-sky-50/30 focus:bg-white focus:outline-none focus:ring-2 focus:ring-sky-500 text-base sm:text-lg text-sky-900 placeholder-sky-300"
-                rows="3"
-              />
-            </div>
-
             <button 
-              type="submit"
-              className="w-full bg-sky-600 text-white py-4 sm:py-5 rounded-2xl font-bold hover:bg-sky-700 transition shadow-xl shadow-sky-200 text-lg sm:text-xl md:text-2xl"
+              onClick={handleSave} 
+              style={{ marginTop: '15px', padding: '12px 25px', background: '#16a34a', color: 'white', border: 'none', borderRadius: '8px', fontSize: '15px', fontWeight: 'bold', cursor: 'pointer', boxShadow: '0 4px 6px -1px rgba(22, 163, 74, 0.3)', transition: '0.2s' }}
             >
-              ยืนยันการประเมิน
+              💾 บันทึกข้อมูล
             </button>
-          </form>
-        </div>
-      )}
+          </div>
+        )}
 
-      {/* 🎉 5. หน้าจอขอบคุณ */}
-      {step === 'success' && (
-        <div className="bg-white p-8 sm:p-12 rounded-3xl shadow-xl border border-sky-100 max-w-md w-full text-center space-y-4">
-          <div className="text-6xl sm:text-7xl animate-bounce">💧</div>
-          <h2 className="text-2xl sm:text-3xl font-bold text-sky-900">ขอบคุณสำหรับการประเมินครับ!</h2>
-          <p className="text-sm sm:text-base text-sky-600/70">ระบบกำลังพากลับสู่หน้าประเมิน...</p>
-        </div>
-      )}
-
+      </div>
     </div>
   );
 }
+
+export default WaterLossDashboard;
