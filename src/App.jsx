@@ -600,16 +600,21 @@ function WaterLossDashboard() {
 
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
               <h3 style={{ color: '#1e293b', margin: '0', fontSize: '17px' }}>📋 ตารางรายงานและจัดลำดับพื้นที่เร่งด่วน (แยกตามสถานี MM)</h3>
-              <div style={{ display: 'flex', gap: '10px', fontSize: '12px' }}>
-                <span style={{ display: 'flex', alignItems: 'center', gap: '4px', background: '#fef2f2', border: '1px solid #fecaca', padding: '4px 10px', borderRadius: '6px', fontWeight: 'bold', color: '#991b1b' }}>
-                  🔴 อันดับ 1 (สูญเสียสูงสุด)
-                </span>
-                <span style={{ display: 'flex', alignItems: 'center', gap: '4px', background: '#fffbeb', border: '1px solid #fde68a', padding: '4px 10px', borderRadius: '6px', fontWeight: 'bold', color: '#92400e' }}>
-                  🟠 อันดับ 2 (สูญเสียสูง)
-                </span>
-                <span style={{ display: 'flex', alignItems: 'center', gap: '10px', background: '#f8fafc', border: '1px solid #e2e8f0', padding: '4px 10px', borderRadius: '6px', color: '#475569' }}>
-                  ⚪ ปกติ
-                </span>
+              <div style={{ display: 'flex', gap: '10px', alignItems: 'center' }}>
+                <button onClick={handleSave} style={{ padding: '8px 18px', background: '#2b6cb0', color: 'white', border: 'none', borderRadius: '6px', cursor: 'pointer', fontWeight: 'bold', fontSize: '13px' }}>
+                  💾 บันทึกข้อมูลเข้าฐานข้อมูล
+                </button>
+                <div style={{ display: 'flex', gap: '10px', fontSize: '12px', marginLeft: '10px' }}>
+                  <span style={{ display: 'flex', alignItems: 'center', gap: '4px', background: '#fef2f2', border: '1px solid #fecaca', padding: '4px 10px', borderRadius: '6px', fontWeight: 'bold', color: '#991b1b' }}>
+                    🔴 อันดับ 1 (สูญเสียสูงสุด)
+                  </span>
+                  <span style={{ display: 'flex', alignItems: 'center', gap: '4px', background: '#fffbeb', border: '1px solid #fde68a', padding: '4px 10px', borderRadius: '6px', fontWeight: 'bold', color: '#92400e' }}>
+                    🟠 อันดับ 2 (สูญเสียสูง)
+                  </span>
+                  <span style={{ display: 'flex', alignItems: 'center', gap: '10px', background: '#f8fafc', border: '1px solid #e2e8f0', padding: '4px 10px', borderRadius: '6px', color: '#475569' }}>
+                    ⚪ ปกติ
+                  </span>
+                </div>
               </div>
             </div>
 
@@ -662,6 +667,8 @@ function WaterLossDashboard() {
                             // เงื่อนไข: เป้าหมายน้ำสูญเสียมากกว่าหรือเท่ากับสูญเสียปัจจุบัน (targetLossPercent >= node.lossPct) จะไม่แสดงข้อมูล 2 ช่องสุดท้าย
                             const isTargetLowerThanCurrent = targetLossPercent < node.lossPct;
 
+                            const rec = records[node.id] || { qin: '', qmeter: '' };
+
                             return (
                               <tr key={node.id} style={{ borderBottom: '1px solid #f1f5f9', background: index === 0 && isLossHigher ? '#fef2f2' : index === 1 && isLossHigher ? '#fffbeb' : 'white' }}>
                                 <td style={{ padding: '12px 10px', fontWeight: 'bold', color: '#64748b' }}>{index + 1}</td>
@@ -671,8 +678,47 @@ function WaterLossDashboard() {
                                   </span>
                                 </td>
                                 <td style={{ padding: '12px 10px', textAlign: 'left', fontWeight: '600', color: '#1e293b' }}>{node.name}</td>
-                                <td style={{ padding: '12px 10px' }}>{node.qin ? formatNumWithComma(node.qin) : '-'}</td>
-                                <td style={{ padding: '12px 10px' }}>{node.qmeter ? formatNumWithComma(node.qmeter) : '-'}</td>
+                                
+                                {/* ช่องแก้ไข: มาตร DMA (คิว) - เปิดให้แก้ไขได้ทุกโซน */}
+                                <td style={{ padding: '12px 10px' }}>
+                                  <input
+                                    type="number"
+                                    value={rec.qin !== undefined && rec.qin !== '' ? rec.qin : (node.qin || '')}
+                                    onChange={(e) => handleInputChange(node.id, 'qin', e.target.value)}
+                                    placeholder="0"
+                                    style={{
+                                      width: '110px',
+                                      padding: '5px 8px',
+                                      textAlign: 'right',
+                                      borderRadius: '4px',
+                                      border: '1px solid #cbd5e0',
+                                      background: 'white',
+                                      fontWeight: '600',
+                                      color: '#0f172a'
+                                    }}
+                                  />
+                                </td>
+
+                                {/* ช่องแก้ไข: น้ำจำหน่าย (คิว) - เปิดให้แก้ไขได้ทุกโซน */}
+                                <td style={{ padding: '12px 10px' }}>
+                                  <input
+                                    type="number"
+                                    value={rec.qmeter !== undefined && rec.qmeter !== '' ? rec.qmeter : (node.qmeter || '')}
+                                    onChange={(e) => handleInputChange(node.id, 'qmeter', e.target.value)}
+                                    placeholder="0"
+                                    style={{
+                                      width: '110px',
+                                      padding: '5px 8px',
+                                      textAlign: 'right',
+                                      borderRadius: '4px',
+                                      border: '1px solid #cbd5e0',
+                                      background: 'white',
+                                      fontWeight: '600',
+                                      color: '#0f172a'
+                                    }}
+                                  />
+                                </td>
+
                                 <td style={{ padding: '12px 10px', fontWeight: '600', color: '#b91c1c' }}>{node.lossVol ? formatNumWithComma(node.lossVol) : '-'}</td>
                                 <td style={{ padding: '12px 10px', fontWeight: 'bold', color: isLossHigher ? '#dc2626' : '#16a34a' }}>
                                   {node.lossPct ? `${node.lossPct.toFixed(2)}%` : '0.00%'}
