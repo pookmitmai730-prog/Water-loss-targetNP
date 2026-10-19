@@ -658,93 +658,44 @@ function WaterLossDashboard() {
                         </thead>
                         <tbody>
                           {sortedMmGroupNodes.map((node, index) => {
-                            const rec = records[node.id] || { qin: '', qmeter: '' };
-                            const isOverTarget = node.lossPct > targetLossPercent;
-
-                            const displayQin = rec.qin !== '' && rec.qin !== undefined ? rec.qin : node.qin;
-                            const displayQmeter = rec.qmeter !== '' && rec.qmeter !== undefined ? rec.qmeter : node.qmeter;
-
-                            // กำหนดไฮไลต์สีตามอันดับความเร่งด่วน (% สูญเสียสูงสุดในกลุ่ม)
-                            let rowBgColor = index % 2 === 0 ? '#ffffff' : '#f8fafc';
-                            let rowBorderLeft = 'none';
-
-                            if (index === 0) {
-                              rowBgColor = '#fef2f2'; // แดงอ่อน (อันดับ 1)
-                              rowBorderLeft = '4px solid #ef4444';
-                            } else if (index === 1 && sortedMmGroupNodes.length > 2) {
-                              rowBgColor = '#fffbeb'; // ส้มอ่อน (อันดับ 2)
-                              rowBorderLeft = '4px solid #f59e0b';
-                            }
+                            const isLossHigher = node.lossPct > targetLossPercent;
+                            // เงื่อนไข: เป้าหมายน้ำสูญเสียมากกว่าหรือเท่ากับสูญเสียปัจจุบัน (targetLossPercent >= node.lossPct) จะไม่แสดงข้อมูล 2 ช่องสุดท้าย
+                            const isTargetLowerThanCurrent = targetLossPercent < node.lossPct;
 
                             return (
-                              <tr key={node.id} style={{ background: rowBgColor, borderLeft: rowBorderLeft, borderBottom: '1px solid #f1f5f9', transition: 'background 0.2s' }}>
+                              <tr key={node.id} style={{ borderBottom: '1px solid #f1f5f9', background: index === 0 && isLossHigher ? '#fef2f2' : index === 1 && isLossHigher ? '#fffbeb' : 'white' }}>
+                                <td style={{ padding: '12px 10px', fontWeight: 'bold', color: '#64748b' }}>{index + 1}</td>
                                 <td style={{ padding: '12px 10px' }}>
-                                  <strong>{index === 0 ? '🔴 #' + (index + 1) : `#${index + 1}`}</strong>
-                                </td>
-                                <td style={{ padding: '12px 10px' }}>
-                                  <span style={{ padding: '4px 8px', borderRadius: '6px', background: node.type === 'MM' ? '#3b82f6' : '#cbd5e1', color: node.type === 'MM' ? 'white' : '#334155', fontSize: '11px', fontWeight: 'bold' }}>
+                                  <span style={{ padding: '2px 8px', borderRadius: '4px', fontSize: '11px', fontWeight: 'bold', background: node.type === 'MM' ? '#dbeafe' : '#f1f5f9', color: node.type === 'MM' ? '#1e40af' : '#475569' }}>
                                     {node.type}
                                   </span>
                                 </td>
                                 <td style={{ padding: '12px 10px', textAlign: 'left', fontWeight: '600', color: '#1e293b' }}>{node.name}</td>
+                                <td style={{ padding: '12px 10px' }}>{node.qin ? formatNumWithComma(node.qin) : '-'}</td>
+                                <td style={{ padding: '12px 10px' }}>{node.qmeter ? formatNumWithComma(node.qmeter) : '-'}</td>
+                                <td style={{ padding: '12px 10px', fontWeight: '600', color: '#b91c1c' }}>{node.lossVol ? formatNumWithComma(node.lossVol) : '-'}</td>
+                                <td style={{ padding: '12px 10px', fontWeight: 'bold', color: isLossHigher ? '#dc2626' : '#16a34a' }}>
+                                  {node.lossPct ? `${node.lossPct.toFixed(2)}%` : '0.00%'}
+                                </td>
+                                <td style={{ padding: '12px 10px', fontWeight: 'bold', color: '#2563eb' }}>{targetLossPercent}%</td>
                                 <td style={{ padding: '12px 10px' }}>
-                                  <input 
-                                    type="number" 
-                                    value={displayQin} 
-                                    onChange={(e) => handleInputChange(node.id, 'qin', e.target.value)}
-                                    style={{ 
-                                      width: '100px', 
-                                      padding: '7px 10px', 
-                                      textAlign: 'right', 
-                                      borderRadius: '6px', 
-                                      border: '1px solid #cbd5e0', 
-                                      background: rec.qin !== '' ? '#fff' : '#f0fff4',
-                                      fontSize: '14px',
-                                      outline: 'none'
-                                    }}
-                                  />
+                                  {isLossHigher ? (
+                                    <span style={{ background: '#fee2e2', color: '#991b1b', padding: '3px 8px', borderRadius: '4px', fontSize: '12px', fontWeight: 'bold' }}>
+                                      🔴 สูงกว่าเป้า
+                                    </span>
+                                  ) : (
+                                    <span style={{ background: '#dcfce7', color: '#166534', padding: '3px 8px', borderRadius: '4px', fontSize: '12px', fontWeight: 'bold' }}>
+                                      🟢 ผ่านเกณฑ์
+                                    </span>
+                                  )}
                                 </td>
-                                <td style={{ padding: '12px 10px' }}>
-                                  <input 
-                                    type="number" 
-                                    value={displayQmeter} 
-                                    onChange={(e) => handleInputChange(node.id, 'qmeter', e.target.value)}
-                                    style={{ 
-                                      width: '100px', 
-                                      padding: '7px 10px', 
-                                      textAlign: 'right', 
-                                      borderRadius: '6px', 
-                                      border: '1px solid #cbd5e0', 
-                                      background: rec.qmeter !== '' ? '#fff' : '#f0fff4',
-                                      fontSize: '14px',
-                                      outline: 'none'
-                                    }}
-                                  />
+                                {/* เป้าหมายต้องลดลงต่อเดือน (คิว) */}
+                                <td style={{ padding: '12px 10px', fontWeight: 'bold', color: isTargetLowerThanCurrent ? '#dc2626' : '#94a3b8' }}>
+                                  {isTargetLowerThanCurrent ? formatNumWithComma(node.reduceTargetVol) : '-'}
                                 </td>
-                                <td style={{ padding: '12px 10px', fontWeight: 'bold', color: '#dc2626' }}>{node.lossVol.toLocaleString()}</td>
-                                <td style={{ padding: '12px 10px' }}>
-                                  <span style={{ padding: '3px 8px', borderRadius: '6px', background: node.lossPct > targetLossPercent ? '#fee2e2' : '#dcfce7', color: node.lossPct > targetLossPercent ? '#991b1b' : '#166534', fontWeight: 'bold' }}>
-                                    {node.lossPct.toFixed(2)}%
-                                  </span>
-                                </td>
-                                <td style={{ padding: '12px 10px', color: '#64748b' }}>{targetLossPercent}%</td>
-                                <td style={{ padding: '12px 10px' }}>
-                                  <span style={{ 
-                                    padding: '5px 10px', 
-                                    borderRadius: '6px', 
-                                    fontSize: '12px', 
-                                    fontWeight: 'bold',
-                                    background: isOverTarget ? '#fee2e2' : '#dcfce7',
-                                    color: isOverTarget ? '#991b1b' : '#166534'
-                                  }}>
-                                    {isOverTarget ? '⚠️ สูงกว่าเป้า' : '✅ ผ่านเกณฑ์'}
-                                  </span>
-                                </td>
-                                <td style={{ padding: '12px 10px', color: '#2563eb', fontWeight: 'bold' }}>
-                                  {formatNumWithComma(node.reduceTargetVol)} คิว
-                                </td>
-                                <td style={{ padding: '12px 10px', background: '#f0f9ff', color: '#0369a1', fontWeight: 'bold' }}>
-                                  {formatNumWithComma(node.optimalQin)} คิว/วัน
+                                {/* น้ำจ่ายรายวันที่เหมาะสม (คิว/วัน) */}
+                                <td style={{ padding: '12px 10px', background: isTargetLowerThanCurrent ? '#f8fafc' : '#fafafa', fontWeight: 'bold', color: isTargetLowerThanCurrent ? '#1d4ed8' : '#94a3b8' }}>
+                                  {isTargetLowerThanCurrent ? formatNumWithComma(node.optimalQin) : '-'}
                                 </td>
                               </tr>
                             );
@@ -756,16 +707,8 @@ function WaterLossDashboard() {
                 );
               })
             )}
-
-            <button 
-              onClick={handleSave} 
-              style={{ marginTop: '15px', padding: '12px 25px', background: '#16a34a', color: 'white', border: 'none', borderRadius: '8px', fontSize: '15px', fontWeight: 'bold', cursor: 'pointer', boxShadow: '0 4px 6px -1px rgba(22, 163, 74, 0.3)', transition: '0.2s' }}
-            >
-              💾 บันทึกข้อมูล
-            </button>
           </div>
         )}
-
       </div>
     </div>
   );
